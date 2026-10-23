@@ -1,0 +1,785 @@
+# MASTER DEVELOPMENT PROMPT: SECURE, TRANSPARENT ONLINE ELECTION PLATFORM
+
+## 1. Project Overview
+
+Act as a senior software architect, election-security engineer, cryptography specialist, database architect, UI/UX designer, and full-stack developer.
+
+Design and implement a professional, production-oriented online election platform inspired by the functionality of ElectionBuddy (electionbuddy.com), but with original branding, original user interface designs, and an architecture specifically engineered for election integrity, voter privacy, transparency, and ease of use.
+
+The initial target market is university alumni associations. However, the platform must be architected to support other membership-based organizations in the future, including professional associations, student unions, faculty associations, departmental associations, graduating sets, chapters, cooperatives, and similar organizations.
+
+The platform must not be a basic polling application. It must be a complete election management system with strict voter eligibility verification, anonymous ballot handling, duplicate-vote prevention, tamper-evident records, transparent counting, independent verification, and comprehensive audit capabilities.
+
+The primary product objective is:
+
+**Make it easy for legitimate voters to participate, difficult for unauthorized users to interfere, and possible for independent observers to verify that the election was conducted according to its published rules.**
+
+Do not claim that any software can make manipulation absolutely impossible. Identify threats, document limitations, and implement controls that prevent, constrain, or reveal unauthorized actions.
+
+## 2. Core Product Principles
+
+Build the platform around these principles:
+
+1. One eligible voter may cast only the permitted number of ballots in each election or contest.
+2. Voters must be verified against trusted membership records and election-specific eligibility rules.
+3. Ballot secrecy must be protected from administrators, database operators, other voters, and unauthorized third parties.
+4. Eligibility records and ballot contents must be architecturally separated.
+5. Accepted ballots and election configuration changes must be protected by integrity controls.
+6. Election results must be calculated using published, deterministic counting rules.
+7. Independent verification must be possible without relying exclusively on the platform's displayed results.
+8. Election administrators must not have unrestricted power to alter voter registers, ballots, counting rules, or certified results.
+9. All privileged administrative actions must be attributable, authorized, and auditable.
+10. Voters must be able to use the platform from mobile phones, tablets, and desktop computers.
+11. The interface must remain accessible to users with limited technical knowledge.
+12. Privacy, accessibility, security, reliability, and auditability must be considered from the beginning rather than added after implementation.
+
+## 3. Recommended Technology Stack
+
+Use the following stack unless a documented technical reason requires an alternative.
+
+### Frontend
+- React.
+- TypeScript.
+- A maintainable component-based UI architecture.
+- Responsive layouts for mobile, tablet, and desktop.
+- Accessible forms, navigation, candidate profiles, and voting interfaces.
+- A consistent design system with clear typography, spacing, validation messages, loading states, and error handling.
+
+### Backend
+- Laravel API.
+- Versioned REST API.
+- Request validation, policies, middleware, service classes, jobs, events, and structured exception handling.
+- Strict server-side authorization.
+- Database transactions for critical election operations.
+- Rate limiting and abuse prevention.
+- Idempotent handling of ballot submission requests.
+
+### Database
+- PostgreSQL.
+- Explicit tenant isolation.
+- Foreign keys, unique constraints, indexes, transactions, and appropriate check constraints.
+- PostgreSQL Row-Level Security where appropriate.
+- Migrations and reproducible seed data.
+- Separate logical schemas or services for identity/eligibility and ballot processing where justified by the threat model.
+
+### Infrastructure
+- Redis for queues, caching, and rate limiting where appropriate.
+- Secure object storage for candidate photographs, manifestos, and exported reports.
+- HTTPS throughout production.
+- Managed secrets and key-management facilities.
+- Automated backups and tested recovery procedures.
+- Centralized monitoring, security alerts, and operational logs.
+- CI/CD pipelines with automated tests and deployment safeguards.
+
+Do not store cryptographic secrets, production credentials, or private signing keys in source code, ordinary database tables, frontend bundles, or version control.
+
+## 4. Multi-Tenant Organization Architecture
+
+The platform must support multiple organizations using one application.
+
+Each organization must have its own:
+- Organization profile.
+- Alumni or membership register.
+- Administrators and electoral officers.
+- Election configurations.
+- Voter eligibility rules.
+- Candidates and ballot definitions.
+- Election schedules.
+- Ballot records and results.
+- Audit records and reports.
+- Branding and notification settings.
+- Subscription and usage settings, if commercial billing is enabled.
+
+Implement tenant isolation at the backend and database levels. Never rely exclusively on frontend filtering to isolate tenant information.
+
+A user belonging to one organization must not access another organization's protected records without explicit authorization.
+
+Platform-wide administrators must not automatically receive unrestricted access to secret ballots or organization-confidential information.
+
+Use least-privilege access, explicit tenant context, authorization policies, and automated cross-tenant isolation tests.
+
+## 5. User Roles and Permissions
+
+Implement a granular role-based access control system.
+
+### Platform Super Administrator
+- Manages platform configuration.
+- Creates or provisions organizations.
+- Manages platform-wide service settings.
+- Monitors operational health.
+- Manages support and subscription functions.
+- Cannot silently alter election results or access secret ballot choices.
+
+### Organization Administrator
+- Manages the organization's profile and authorized users.
+- Imports membership records.
+- Configures approved organizational settings.
+- Cannot independently certify an election they created if the election's governance rules require separation of duties.
+
+### Electoral Committee
+- Defines election rules.
+- Reviews eligibility disputes.
+- Approves the preliminary and final voter registers.
+- Approves candidates.
+- Authorizes the opening and closing of elections.
+- Reviews audit reports.
+- Certifies results according to organizational policy.
+
+### Election Auditor or Observer
+- Accesses permitted election records and verification evidence.
+- Verifies the approved configuration, register certification, tally, and audit results.
+- Cannot change ballots, voter eligibility, or election rules.
+
+### Candidate
+- Maintains an approved candidate profile.
+- Uploads a photograph and manifesto.
+- Views permitted election information.
+- Cannot access confidential voter records or secret ballot information.
+
+### Alumni Member or Voter
+- Creates or accesses an account.
+- Verifies identity and membership.
+- Checks election eligibility.
+- Reviews approved candidates.
+- Casts an authorized ballot.
+- Checks whether their ballot was accepted.
+- Submits eligibility corrections or appeals.
+
+### Independent Verifier
+- Uses published verification data and documented procedures to independently validate election integrity.
+- Does not require access to voter identities or secret ballot choices.
+
+Enforce all permissions on the server. Hiding buttons in the frontend is not an authorization mechanism.
+
+## 6. Alumni Registration and Identity Verification
+
+Build a secure alumni registration and verification module.
+
+Support:
+- Manual registration.
+- Import of authorized alumni records using CSV and Excel.
+- Optional integration with institutional alumni databases or student information systems.
+- Verification through institution-issued identifiers.
+- Verified email or phone contact methods.
+- Manual review for incomplete, conflicting, or disputed records.
+- Account recovery and secure credential management.
+- Duplicate record detection and resolution.
+- Member profile correction requests.
+
+Possible membership attributes include:
+- Alumni ID.
+- Matriculation or student registration number.
+- Full name.
+- Institution.
+- Faculty.
+- Department.
+- Graduation year.
+- Degree or programme.
+- Alumni chapter.
+- Membership status.
+- Verification status.
+- Contact verification status.
+- Eligibility decision history.
+
+Collect only data needed for verification, governance, and legitimate operation.
+
+Do not assume that a matriculation number, email address, phone number, or uploaded spreadsheet independently proves identity or alumni status.
+
+The system must record the verification source, verification method, decision date, and authorized reviewer where applicable.
+
+Provide clear status labels:
+- Pending verification.
+- Verified.
+- Additional information required.
+- Under review.
+- Rejected.
+- Suspended.
+- Approved for a particular election.
+
+Keep identity verification separate from the secret ballot process.
+
+## 7. Voter Eligibility Verification Engine
+
+Treat voter eligibility as a core election-security component, not a simple database flag.
+
+Create an eligibility engine that evaluates a member against the published rules for each election.
+
+### Eligibility inputs
+
+Depending on the organization and election, rules may consider:
+- Verified membership.
+- Membership status.
+- Institution.
+- Faculty.
+- Department.
+- Graduation year or graduating set.
+- Alumni chapter.
+- Membership tenure.
+- Dues status, only when lawfully and legitimately required by approved rules.
+- Election-specific membership categories.
+- Any additional approved eligibility requirements.
+
+### Eligibility workflow
+
+1. An authorized administrator imports or synchronizes membership records.
+2. The system validates data types, required fields, duplicates, and inconsistent records.
+3. The system compares records with trusted source information.
+4. The eligibility engine evaluates the published election rules.
+5. Clear qualifying records enter the preliminary eligible register.
+6. Uncertain or disputed records enter a manual review queue.
+7. Ineligible records receive an internal reason code and an appropriate explanation to the member.
+8. Eligible members receive a notification where appropriate.
+9. Members can securely check their eligibility.
+10. Members may request corrections or submit objections.
+11. Authorized reviewers investigate disputes.
+12. Every decision, correction, and appeal is recorded in an audit trail.
+13. The electoral committee approves the final register using the required separation of duties.
+14. The system produces a versioned, signed register certification and integrity checkpoint.
+15. The final register is locked before voting begins.
+
+### Eligibility engine requirements
+
+- Make rules explicit and version-controlled.
+- Use deterministic evaluation where possible.
+- Store the rule version used for each decision.
+- Record a decision reason code.
+- Support manual exceptions only through documented authorization.
+- Require appropriate independent approval for sensitive changes.
+- Preserve previous register versions and correction histories.
+- Prevent silent addition or removal of eligible voters.
+- Detect duplicate membership identifiers and suspicious account patterns.
+- Support election-specific eligibility rather than assuming all members can vote in every election.
+- Allow corrections through a controlled process without erasing historical evidence.
+
+Do not permanently reject genuine alumni solely because an imported record is incomplete or formatted differently. Flag uncertain records for review.
+
+### Preliminary and final voter register
+
+Provide a secure eligibility-checking portal and a configurable register-objection period.
+
+The public must not receive unnecessary personal data. Where public register publication is appropriate, provide only the minimum information required by the organization's rules and applicable law.
+
+Generate a cryptographic commitment to the approved register, or another independently verifiable certification mechanism that protects personal information.
+
+The certification should make unauthorized register changes detectable without publishing a list of sensitive personal identifiers.
+
+## 8. Election Creation and Configuration
+
+Authorized users must be able to create elections through a guided interface.
+
+Each election should include:
+- Election title.
+- Description.
+- Organization.
+- Election type.
+- Voting start and end times.
+- Time zone.
+- Eligible voter groups.
+- Candidate nomination period.
+- Candidate approval workflow.
+- Electoral committee.
+- Observers and auditors.
+- Ballot structure.
+- Voting method.
+- Maximum selections per contest.
+- Abstention or blank-ballot rules, where supported.
+- Tie-breaking rules.
+- Quorum rules, where applicable.
+- Result publication policy.
+- Audit policy.
+- Voter notification schedule.
+- Appeal and dispute process.
+
+Support multiple positions within one election.
+
+For example:
+- President.
+- Vice President.
+- General Secretary.
+- Assistant Secretary.
+- Treasurer.
+- Public Relations Officer.
+
+Support configurable election scopes:
+- National alumni association.
+- Faculty.
+- Department.
+- Graduation set.
+- Regional or international chapter.
+- Other approved membership groups.
+
+Use a clear election lifecycle:
+- Draft.
+- Configuration review.
+- Candidate nominations.
+- Candidate verification.
+- Preliminary voter register.
+- Objection period.
+- Final approval.
+- Scheduled.
+- Open.
+- Closed.
+- Counting.
+- Results under review.
+- Certified.
+- Published.
+- Archived.
+- Cancelled under authorized procedures.
+
+Enforce valid state transitions on the backend.
+
+## 9. Election Configuration Lock
+
+Before voting opens, create a signed or independently verifiable election configuration record.
+
+It must cover the approved:
+- Election rules.
+- Contest definitions.
+- Candidate list.
+- Candidate order or ballot presentation rules.
+- Eligibility criteria.
+- Voting method.
+- Opening and closing times.
+- Counting algorithm and version.
+- Tie-breaking rules.
+- Result publication policy.
+
+Changes after the configuration is locked must not silently overwrite the approved configuration.
+
+Define a controlled amendment procedure:
+1. Record the proposed change.
+2. Explain the reason.
+3. Require the specified authorization.
+4. Record the previous and proposed configurations.
+5. Notify affected parties where appropriate.
+6. Determine whether the election must be paused, restarted, or cancelled.
+7. Publish a privacy-preserving audit entry.
+
+Do not permit administrators to change counting rules or candidate eligibility retrospectively to produce a preferred result.
+
+## 10. Candidate Management
+
+Provide a candidate registration and review workflow.
+
+Candidate fields may include:
+- Full name.
+- Photograph.
+- Alumni identification reference.
+- Graduation details.
+- Position contested.
+- Biography.
+- Manifesto.
+- Eligibility status.
+- Nomination status.
+- Approval status.
+- Withdrawal status.
+
+Features:
+- Candidate application.
+- Eligibility verification.
+- Supporting documents where required.
+- Electoral committee review.
+- Approval or rejection with reason.
+- Candidate profile preview.
+- Manifesto publication.
+- Candidate withdrawal procedure.
+- Audit history of candidate changes.
+
+Once voting opens, prevent unauthorized changes to the approved candidate list.
+
+Candidate order should follow a documented and fair rule, such as alphabetical order or a recorded randomization procedure, rather than administrator preference.
+
+## 11. Ballot Design and Voting Methods
+
+Support a clearly defined initial set of voting methods.
+
+At minimum:
+- Single-choice voting.
+- Multiple-choice voting with a configured selection limit.
+- Multiple independent contests within one election.
+- Optional abstention, if permitted by election rules.
+
+Design the architecture to support more advanced methods in later phases:
+- Ranked-choice voting.
+- Instant-runoff voting.
+- Single Transferable Vote.
+- Approval voting.
+- Other formally specified methods.
+
+Do not claim that a voting method is implemented until its rules, validation, counting logic, and tests are complete.
+
+For every ballot:
+1. Authenticate the voter.
+2. Verify eligibility for the relevant contest.
+3. Confirm that voting is open.
+4. Check that the voting credential has not already been used.
+5. Display the approved ballot.
+6. Allow the voter to review their selections.
+7. Validate the ballot against the published rules.
+8. Submit the ballot through a protected backend operation.
+9. Confirm acceptance only after the authoritative transaction succeeds.
+10. Record that the voter has exercised their voting entitlement without revealing their selections.
+
+Make the interface clear about whether the vote is final and whether changing a submitted ballot is permitted. Default to no vote changes unless a formally approved voting protocol specifies otherwise.
+
+Prevent duplicate submissions through database constraints, atomic transactions, idempotency controls, and appropriate credential-consumption mechanisms.
+
+Do not trust client-side validation.
+
+## 12. Ballot Secrecy and Privacy Architecture
+
+Ballot secrecy must be enforced architecturally.
+
+Do not store a direct relationship between a voter's personal identity and their candidate selections.
+
+Separate at least the following logical responsibilities:
+
+### Identity and eligibility service
+- User identity.
+- Membership verification.
+- Election eligibility.
+- Authentication status.
+- Whether voting entitlement has been exercised.
+
+### Ballot service
+- Accepted ballot payload.
+- Election and contest identifiers.
+- Ballot validation status.
+- Cryptographic integrity metadata.
+- Data needed for the authorized counting procedure.
+
+### Audit and verification service
+- Election configuration commitments.
+- Administrative action records.
+- Register certification.
+- Ballot ledger checkpoints.
+- Counting evidence.
+- Result certification.
+
+Design and document how the identity service issues a voting entitlement that the ballot service can validate without learning the voter's identity.
+
+Evaluate appropriate cryptographic approaches:
+- Blind signatures.
+- Anonymous credentials.
+- Zero-knowledge proofs.
+- Public-key encryption.
+- Cryptographic commitments.
+- Verifiable mixnets or homomorphic tallying where justified.
+
+Do not implement custom cryptographic primitives. Prefer well-reviewed protocols, mature libraries, documented security assumptions, and expert review.
+
+Do not claim that separating database tables alone guarantees anonymity. Analyze possible correlation through timestamps, IP addresses, application logs, backups, administrative access, and other metadata.
+
+Minimize and protect identifying metadata. Ensure operational logging does not accidentally record ballot selections or provide a straightforward identity-to-ballot mapping.
+
+Define the threat model and explain what each cryptographic component protects against.
+
+## 13. Cryptographic Integrity and Tamper-Evident Records
+
+Design a verifiable election record system.
+
+Possible controls include:
+- Cryptographic hashes.
+- Digital signatures.
+- Append-only audit records.
+- Hash-linked event records.
+- Signed election configuration snapshots.
+- Signed voter-register commitments.
+- Signed tally and result records.
+- Independently retained checkpoints.
+- External timestamping or witness services where appropriate.
+
+For accepted ballots, maintain integrity evidence that can reveal unauthorized alteration, deletion, or insertion under the documented threat model.
+
+Do not treat a simple hash chain as sufficient protection against a privileged operator who can rewrite the entire database and recompute the chain.
+
+Strengthen integrity through independently retained signed checkpoints and multiple independent witnesses where practical.
+
+Design a documented verification procedure that can be run outside the main application.
+
+Keep voter identities and ballot choices out of publicly published integrity records.
+
+## 14. Secure Vote Counting Engine
+
+Build vote counting as a separate, testable component with versioned counting rules.
+
+The counting engine must:
+- Accept only valid, accepted ballots for the election.
+- Reject duplicate ballot identifiers where the protocol requires uniqueness.
+- Apply the published voting method.
+- Apply the approved treatment of abstentions and invalid ballots.
+- Calculate each contest independently where appropriate.
+- Apply published tie-breaking rules.
+- Produce deterministic results.
+- Generate a machine-readable tally report.
+- Produce verification evidence for authorized observers.
+- Support independent recounts using the accepted ballot data and approved counting procedure.
+
+For simple plurality elections, publish the number of valid votes received by each candidate and the total valid ballots counted.
+
+Do not assume that the total number of selections across all contests must equal the total number of ballots: different ballot rules can produce different valid totals.
+
+Use independent test implementations or independently verified test vectors where practical.
+
+The platform must distinguish between:
+- Ballots submitted.
+- Ballots accepted.
+- Ballots rejected.
+- Ballots included in the tally.
+- Blank or abstention selections where supported.
+- Final valid votes for each candidate.
+
+Record all count reconciliation checks and report discrepancies rather than silently correcting them.
+
+## 15. Independent Election Verification
+
+Design the platform so that a verifier can check the election without simply trusting the administrator's dashboard.
+
+Provide a verification package containing appropriate, privacy-preserving artifacts such as:
+- Election identifier and configuration version.
+- Signed configuration commitment.
+- Final register certification and relevant totals.
+- Published voting rules.
+- Counting algorithm version.
+- Signed ballot ledger checkpoints.
+- Ballot acceptance and reconciliation totals.
+- Tally report.
+- Result signature.
+- Audit events relevant to the election.
+- Instructions for independent verification.
+
+Where end-to-end verifiability is implemented, provide voter-verifiable inclusion evidence and publicly verifiable tally proofs without revealing ballot choices.
+
+Do not confuse a receipt proving that a ballot was accepted with proof of how the voter voted.
+
+Avoid giving voters receipts that reveal their candidate selections in a way that facilitates vote buying or coercion.
+
+Define the verifier's trust assumptions, required software, expected inputs, and verification output.
+
+A verifier must be able to report a clear pass, fail, or inconclusive result.
+
+## 16. Election Administration and Separation of Duties
+
+Prevent any single administrator from controlling every critical election function.
+
+Require independent authorization for sensitive actions such as:
+- Approving the final voter register.
+- Changing the approved election configuration.
+- Opening the election.
+- Closing or cancelling the election.
+- Authorizing tally decryption where applicable.
+- Certifying results.
+- Reopening an election after a documented incident.
+
+Use configurable dual approval or multi-party authorization.
+
+For high-assurance election modes, evaluate threshold cryptography so that no single key holder can decrypt ballots or authorize the tally alone.
+
+Require strong authentication for privileged accounts.
+
+Record who initiated and approved each action, the time, the reason, and the affected election.
+
+Make audit records tamper-evident and independently retained where appropriate.
+
+## 17. Fraud Detection and Security Monitoring
+
+Implement risk-based detection and response for:
+- Repeated authentication failures.
+- Credential replay.
+- Duplicate voting attempts.
+- Automated account creation.
+- Suspicious membership changes.
+- Unusual administrator behavior.
+- Unauthorized election configuration changes.
+- Unexpected tally discrepancies.
+- Cross-tenant access attempts.
+- Attempts to bypass election state restrictions.
+- Denial-of-service patterns.
+- Suspicious changes to audit or integrity records.
+
+Use deterministic security rules for clearly defined violations.
+
+Machine-learning anomaly detection may be introduced later as an additional signal, but it must not independently declare fraud or disqualify voters without a documented, reviewable process.
+
+Provide:
+- Severity levels.
+- Alert routing.
+- Incident timelines.
+- Evidence preservation.
+- Authorized incident response actions.
+- Documented election suspension and recovery procedures.
+
+Distinguish between a detected technical anomaly, a suspected attack, and proven election fraud.
+
+## 18. Election Opening, Closing, and Certification
+
+Implement a controlled lifecycle.
+
+### Before opening
+- Validate the final register.
+- Validate candidate approval.
+- Confirm election rules.
+- Verify configuration signatures.
+- Confirm the system is healthy.
+- Record opening authorization.
+
+### During voting
+- Enforce election opening and closing times using the server's authoritative clock.
+- Prevent unauthorized configuration changes.
+- Monitor service health and security events.
+- Maintain accepted-ballot integrity evidence.
+- Protect ballot secrecy.
+
+### At closing
+- Stop accepting ballots according to the published closing rule.
+- Record the closure event.
+- Reject late submissions according to the approved protocol.
+- Reconcile submitted and accepted ballot records.
+- Generate signed integrity checkpoints.
+- Start the authorized counting procedure.
+
+### After closing
+- Run the counting engine.
+- Validate reconciliation checks.
+- Generate independent verification artifacts.
+- Allow authorized auditors to review the evidence.
+- Resolve documented discrepancies.
+- Certify and publish results according to the approved process.
+- Archive election records under the applicable retention policy.
+
+No administrator should be able to silently reopen an election or change the certified result.
+
+## 19. Transparent Results Dashboard
+
+Provide a public results page that displays only information approved for publication.
+
+Possible fields:
+- Election name.
+- Organization.
+- Election status.
+- Voting period.
+- Number of eligible voters.
+- Number of accepted ballots.
+- Turnout percentage.
+- Candidate vote totals.
+- Contest winners.
+- Rejected ballot counts where appropriate.
+- Result certification status.
+- Verification package availability.
+- Audit summary.
+- Recount or dispute status.
+
+Do not expose individual voter identities, candidate selections, authentication secrets, or unnecessary personal information.
+
+Support downloadable PDF and CSV reports.
+
+Make result publication policies explicit: some elections may publish preliminary results, while others must wait for formal certification.
+
+## 20. User Interface and User Experience
+
+The platform must be professional, simple, modern, responsive, and accessible.
+
+Create the following interfaces:
+
+### Public website
+- Home page.
+- Product features.
+- How the election process works.
+- Security and transparency information.
+- Organization registration.
+- Pricing if enabled.
+- Help centre.
+- Contact and support.
+
+### Platform administrator dashboard
+- Organization management.
+- User and role management.
+- Platform health.
+- Security alerts.
+- Subscription management if applicable.
+- Operational audit records.
+
+### Organization dashboard
+- Election overview.
+- Eligible member totals.
+- Pending verification.
+- Register disputes.
+- Candidate management.
+- Election configuration.
+- Voter invitations.
+- Turnout monitoring.
+- Election reports.
+
+### Voter portal
+- Simple login and verification.
+- Available elections.
+- Eligibility status.
+- Candidate profiles and manifestos.
+- Accessible ballot interface.
+- Ballot review and submission confirmation.
+- Participation confirmation.
+- Help and eligibility appeals.
+
+### Electoral committee dashboard
+- Approval queues.
+- Eligibility disputes.
+- Candidate review.
+- Election readiness checklist.
+- Multi-party approvals.
+- Incident reports.
+- Audit and certification tools.
+
+### Auditor dashboard
+- Read-only access to authorized evidence.
+- Configuration verification.
+- Register certification verification.
+- Ballot reconciliation.
+- Tally verification.
+- Audit package export.
+- Clear verification status and explanations.
+
+Use accessible language, clear confirmation screens, appropriate contrast, keyboard navigation, screen-reader support, and mobile-first layouts.
+
+Avoid unnecessarily complicated workflows for voters.
+
+## 21. Database Design
+
+Develop a normalized, secure, maintainable PostgreSQL schema.
+
+Consider entities such as:
+- organizations
+- organization_members
+- users
+- roles
+- permissions
+- alumni_profiles
+- membership_sources
+- membership_imports
+- membership_import_errors
+- identity_verifications
+- elections
+- election_rules
+- election_config_versions
+- election_eligibility_rules
+- voter_register_versions
+- voter_eligibility_decisions
+- eligibility_appeals
+- candidates
+- candidate_nominations
+- contests
+- ballot_definitions
+- voting_entitlements
+- ballot_submissions
+- encrypted_ballots
+- ballot_integrity_records
+- tally_runs
+- tally_results
+- result_certifications
+- cryptographic_checkpoints
+- audit_events
+- observer_assignments
+- notifications
+- security_incidents
+- retention_policies
+
+These are conceptual entities, not a requirement to place all data in one schema or
