@@ -6,3 +6,8 @@ data
 *.tsbuildinfo
 .DS_Store
 Thumbs.db
+.conversation/
+.replit
+replit.md
+.local/
+.agents/

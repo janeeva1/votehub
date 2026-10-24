@@ -1,0 +1,27 @@
+# Render Blueprint: Dashboard → New → Blueprint → pick this repository.
+# You'll be asked for DATABASE_URL (your Neon connection string) and PUBLIC_URL.
+services:
+  - type: web
+    name: votehub
+    runtime: node
+    plan: free
+    region: frankfurt
+    buildCommand: npm ci --include=dev && npm run build
+    startCommand: npm start
+    healthCheckPath: /api/health
+    autoDeploy: true
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: NODE_VERSION
+        value: "22"
+      - key: DATABASE_URL
+        sync: false
+      - key: PUBLIC_URL
+        sync: false
+      - key: APP_SECRET
+        generateValue: true
+      - key: PAYSTACK_SECRET_KEY
+        sync: false
+      - key: PLATFORM_ADMIN_EMAILS
+        sync: false

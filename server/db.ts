@@ -44,8 +44,18 @@ function explain(err: any, url: URL): string {
       return `PostgreSQL user "${decodeURIComponent(url.username)}" isn't allowed to connect. Check the user name in DATABASE_URL.`;
     case "ENOTFOUND":
       return `PostgreSQL host "${url.hostname}" was not found. Check DATABASE_URL.`;
+    case "ETIMEDOUT":
+    case "ECONNRESET":
+    case "EHOSTUNREACH":
+      return `Timed out reaching ${where}. Check your internet connection, or that the database allows connections from this server (Neon allows all IPs unless you set an IP allow-list).`;
+    case "3D000":
+      return `Database "${decodeURIComponent(url.pathname.slice(1))}" doesn't exist on ${url.hostname}. Check the name at the end of DATABASE_URL.`;
     default:
-      return `Database error: ${err?.message ?? err}`;
+      if (/self[- ]signed|certificate/i.test(err?.message ?? "")) return `SSL certificate problem talking to ${url.hostname}: ${err.message}. Keep "?sslmode=require" at the end of DATABASE_URL.`;
+      if (/endpoint.*(disabled|not found|could not be found)|compute.*suspended|project.*(not found|deleted)/i.test(err?.message ?? "")) return `Neon says: ${err.message}. Open the Neon console and check the project/branch is active and the connection string is current.`;
+      if (/password authentication failed/i.test(err?.message ?? "")) return `The database rejected the password for "${decodeURIComponent(url.username)}". Copy a fresh connection string from your database dashboard (Neon: Dashboard → Connect).`;
+      if (/ssl|SSL off/i.test(err?.message ?? "") && !/sslmode=/.test(url.search)) return `This database requires SSL. Add "?sslmode=require" to the end of DATABASE_URL.`;
+      return `Database error (${url.hostname}): ${err?.message ?? err}`;
   }
 }
 
@@ -53,7 +63,7 @@ function explain(err: any, url: URL): string {
 async function ensureDatabaseExists(url: URL) {
   const name = decodeURIComponent(url.pathname.replace(/^\//, ""));
   if (!name) throw new Error("DATABASE_URL must include a database name, e.g. postgres://postgres:password@localhost:5432/votehub");
-  const probe = new pg.Client({ connectionString: url.toString(), ssl: sslFor(url.toString()) });
+  const probe = new pg.Client({ connectionString: url.toString(), ssl: sslFor(url.toString()), connectionTimeoutMillis: 20_000 });
   try {
     await probe.connect();
     await probe.end();
@@ -94,7 +104,7 @@ export async function initDatabase(): Promise<Database> {
     throw new Error(explain(err, url));
   }
 
-  const pool = new pg.Pool({ connectionString: config.databaseUrl, max: Number(process.env.DATABASE_POOL_SIZE ?? 10), ssl: sslFor(config.databaseUrl) });
+  const pool = new pg.Pool({ connectionString: config.databaseUrl, max: Number(process.env.DATABASE_POOL_SIZE ?? 10), ssl: sslFor(config.databaseUrl), connectionTimeoutMillis: 20_000, idleTimeoutMillis: 30_000 });
   pool.on("error", (err) => logger.error("PostgreSQL pool error", err));
   db = {
     ...wrap((sql, params) => pool.query(sql, params as any[])),

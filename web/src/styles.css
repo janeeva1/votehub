@@ -899,3 +899,14 @@ button.pass-option:hover { border-color: var(--primary); }
   .hero2 h1, .hero2-sub, .hero2-actions, .hero-browser, .hero2-art > .phone, .kinds-panel { animation: none; }
   .paper-receipt { transition: none; }
 }
+/* ---- Voter import ---- */
+.import-steps { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+.import-steps > div { border: 1px solid var(--line); border-radius: 12px; padding: 14px; display: flex; flex-direction: column; gap: 8px; align-items: flex-start; background: var(--surface-2); }
+.col-guide summary { cursor: pointer; font-weight: 600; font-size: 14px; color: var(--primary); }
+.col-guide .table { margin-top: 8px; }
+.preview-table { max-height: 300px; overflow: auto; border: 1px solid var(--line); border-radius: 10px; }
+.preview-table .table { font-size: 13px; }
+.row-bad td { background: var(--red-soft); }
+.row-bad td:last-child { color: var(--red); font-weight: 600; }
+.row-warn td:last-child { color: var(--gold-text); }
+@media (max-width: 640px) { .import-steps { grid-template-columns: 1fr; } }

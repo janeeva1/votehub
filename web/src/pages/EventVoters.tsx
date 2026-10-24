@@ -23,7 +23,15 @@ interface VoterRow {
 }
 
 /** Minimal CSV parser (quotes, commas, newlines). */
-export function parseCsv(text: string): string[][] {
+export function parseCsv(input: string): string[][] {
+  const text = input.replace(/^\ufeff/, "");
+  // Excel in some regions saves with ";" — use whichever separator the first line uses most.
+  const first = text.split(/\r?\n/, 1)[0] ?? "";
+  const sep = [",", ";", "\t"].sort((a, b) => first.split(b).length - first.split(a).length)[0]!;
+  return parseWith(text, sep);
+}
+
+function parseWith(text: string, sep: string): string[][] {
   const rows: string[][] = [];
   let row: string[] = [];
   let cell = "";
@@ -37,7 +45,7 @@ export function parseCsv(text: string): string[][] {
       } else if (ch === '"') quoted = false;
       else cell += ch;
     } else if (ch === '"') quoted = true;
-    else if (ch === "," || ch === ";" || ch === "\t") {
+    else if (ch === sep) {
       row.push(cell.trim());
       cell = "";
     } else if (ch === "\n" || ch === "\r") {
@@ -53,22 +61,86 @@ export function parseCsv(text: string): string[][] {
   return rows;
 }
 
-function toVoters(rows: string[][]) {
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+/** Header names people actually use in their spreadsheets → our fields. */
+const ALIASES: Record<string, string[]> = {
+  name: ["name", "full name", "fullname", "voter name", "member name", "names"],
+  email: ["email", "email address", "e-mail", "mail"],
+  phone: ["phone", "phone number", "mobile", "mobile number", "whatsapp", "tel", "telephone"],
+  ref: ["ref", "member id", "membership id", "matric", "matric number", "matric no", "staff id", "id", "reg number", "reference"],
+  weight: ["weight", "shares", "units", "votes"],
+  group: ["group", "voter group", "branch", "chapter", "department", "class", "set"],
+};
+
+export interface ImportRow {
+  line: number;
+  name: string;
+  email: string | null;
+  phone: string | null;
+  ref: string | null;
+  weight?: number;
+  group: string | null;
+  problem?: string;
+  warning?: string;
+}
+
+/** Turns spreadsheet rows into voters, flagging rows that can't be imported instead of failing the whole file. */
+export function toVoters(rows: string[][], opts: { weighted?: boolean; groups?: string[] } = {}): ImportRow[] {
   if (!rows.length) return [];
-  const header = rows[0]!.map((h) => h.toLowerCase());
-  const hasHeader = header.includes("name") || header.includes("email");
-  const idx = (k: string, fallback: number) => (hasHeader ? header.indexOf(k) : fallback);
-  const map = { name: idx("name", 0), email: idx("email", 1), phone: idx("phone", 2), ref: idx("ref", 3), weight: idx("weight", 4), group: idx("group", 5) };
-  return (hasHeader ? rows.slice(1) : rows)
-    .map((r) => ({
-      name: (map.name >= 0 ? r[map.name] : "") || (map.email >= 0 ? r[map.email] : "") || "",
-      email: map.email >= 0 ? r[map.email] || null : null,
-      phone: map.phone >= 0 ? r[map.phone] || null : null,
-      ref: map.ref >= 0 ? r[map.ref] || null : null,
-      weight: map.weight >= 0 && r[map.weight] ? Number(r[map.weight]) : undefined,
-      group: map.group >= 0 ? r[map.group] || null : null,
-    }))
-    .filter((v) => v.name);
+  const header = rows[0]!.map((h) => h.toLowerCase().replace(/^﻿/, "").replace(/[*_]/g, " ").replace(/\s+/g, " ").trim());
+  const find = (k: string) => header.findIndex((h) => ALIASES[k]!.includes(h));
+  const hasHeader = find("name") >= 0 || find("email") >= 0;
+  const map = hasHeader
+    ? { name: find("name"), email: find("email"), phone: find("phone"), ref: find("ref"), weight: find("weight"), group: find("group") }
+    : { name: 0, email: 1, phone: 2, ref: 3, weight: 4, group: 5 };
+  const cell = (r: string[], i: number) => (i >= 0 ? (r[i] ?? "").trim() : "");
+  const groupsLower = new Map((opts.groups ?? []).map((g) => [g.toLowerCase(), g]));
+  return (hasHeader ? rows.slice(1) : rows).map((r, i) => {
+    const email = cell(r, map.email).toLowerCase() || null;
+    const name = cell(r, map.name) || email || "";
+    let phone = cell(r, map.phone).replace(/[\s()-]/g, "") || null;
+    // Excel turns 08031234567 into 8031234567 — put the leading 0 back.
+    if (phone && /^[789]\d{9}$/.test(phone)) phone = `0${phone}`;
+    const weightRaw = cell(r, map.weight);
+    const groupRaw = cell(r, map.group);
+    const v: ImportRow = {
+      line: i + (hasHeader ? 2 : 1),
+      name,
+      email,
+      phone,
+      ref: cell(r, map.ref) || null,
+      weight: weightRaw ? Number(weightRaw.replace(/,/g, "")) : undefined,
+      group: groupRaw ? groupsLower.get(groupRaw.toLowerCase()) ?? groupRaw : null,
+    };
+    if (!name) v.problem = "No name or email";
+    else if (email && !EMAIL_RE.test(email)) v.problem = `"${email}" isn't a valid email`;
+    else if (weightRaw && (!Number.isFinite(v.weight) || v.weight! <= 0)) v.problem = `Weight "${weightRaw}" must be a positive number`;
+    else if (!email && !phone) v.warning = "No email or phone — share this voter's code yourself";
+    else if (v.group && opts.groups?.length && !groupsLower.has(v.group.toLowerCase())) v.warning = `Group "${v.group}" isn't used by any question`;
+    if (!opts.weighted) delete v.weight;
+    return v;
+  });
+}
+
+/** A ready-to-fill CSV with the columns this event uses, plus example rows. */
+export function voterTemplate(e: { title: string; settings: { ballot: { weighted: boolean } }; voterGroups: string[] }) {
+  const cols = ["name", "email", "phone", "ref", ...(e.settings.ballot.weighted ? ["weight"] : []), ...(e.voterGroups.length ? ["group"] : [])];
+  const g = e.voterGroups.length ? e.voterGroups : ["Lagos"];
+  const examples = [
+    { name: "Adaeze Obi", email: "adaeze.obi@example.com", phone: "08031234567", ref: "MEM-0001", weight: "1", group: g[0] },
+    { name: "Bayo Lawal", email: "bayo.lawal@example.com", phone: "", ref: "MEM-0002", weight: "2", group: g[1 % g.length] },
+    { name: "Chioma Eze", email: "", phone: "+2348091234567", ref: "MEM-0003", weight: "1", group: g[0] },
+  ];
+  const q = (v: string) => (/[",\n]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v);
+  const lines = [cols.join(","), ...examples.map((x) => cols.map((c) => q((x as any)[c] ?? "")).join(","))];
+  const blob = new Blob(["﻿" + lines.join("\r\n") + "\r\n"], { type: "text/csv;charset=utf-8" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = `${e.title.replace(/[^a-z0-9]+/gi, "-").replace(/^-|-$/g, "").toLowerCase() || "voters"}-voter-template.csv`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 2000);
 }
 
 export function VotersTab({ e }: { e: EventDetail }) {
@@ -121,6 +193,9 @@ export function VotersTab({ e }: { e: EventDetail }) {
         action={
           editable && (
             <div className="btn-row">
+              <Button kind="quiet" size="sm" onClick={() => voterTemplate(e)} title="Download a CSV template for this event">
+                <Download size={14} /> Template
+              </Button>
               <Button kind="outline" size="sm" onClick={() => setImporting(true)}>
                 <Upload size={14} /> Import CSV
               </Button>
@@ -172,7 +247,19 @@ export function VotersTab({ e }: { e: EventDetail }) {
         {voters.isLoading ? (
           <Loading />
         ) : !d?.voters.length ? (
-          <Empty title={q || status ? "No matching voters" : "No voters yet"} detail={q || status ? undefined : "Add voters one by one or import a CSV with columns: name, email, phone, ref, weight, group."} />
+          <>
+            <Empty title={q || status ? "No matching voters" : "No voters yet"} detail={q || status ? undefined : "Only people on this list can vote. Add them one by one, or download the template, fill it in and import it."} />
+            {!q && !status && editable && (
+              <div className="btn-row center">
+                <Button kind="outline" size="sm" onClick={() => voterTemplate(e)}>
+                  <Download size={14} /> Download CSV template
+                </Button>
+                <Button size="sm" onClick={() => setImporting(true)}>
+                  <Upload size={14} /> Import voters
+                </Button>
+              </div>
+            )}
+          </>
         ) : (
           <>
             <div className="table-wrap">
@@ -400,33 +487,120 @@ function ProxyModal({ e, voter, onClose, onDone }: { e: EventDetail; voter: Vote
 function ImportModal({ e, open, onClose, onDone }: { e: EventDetail; open: boolean; onClose: () => void; onDone: () => void }) {
   const toast = useToast();
   const [text, setText] = useState("");
+  const [fileName, setFileName] = useState("");
   const [busy, setBusy] = useState(false);
-  const parsed = toVoters(parseCsv(text));
+  const rows = toVoters(parseCsv(text), { weighted: e.settings.ballot.weighted, groups: e.voterGroups });
+  const good = rows.filter((r) => !r.problem);
+  const bad = rows.filter((r) => r.problem);
+  const warned = good.filter((r) => r.warning);
+  const cols: [string, string, string][] = [
+    ["name", "Required", "Full name as it should appear on the voter list. If empty, the email is used."],
+    ["email", "Recommended", "Where the private voting code is sent. Each email can appear once per event."],
+    ["phone", "Optional", "For SMS and WhatsApp codes, e.g. 08031234567 or +2348031234567."],
+    ["ref", "Optional", "Your own member ID, matric or staff number, to tell people with the same name apart."],
+    ...(e.settings.ballot.weighted ? ([["weight", "Optional", "How much this voter's ballot counts (shares, units). Defaults to 1."]] as [string, string, string][]) : []),
+    ...(e.voterGroups.length ? ([["group", "Optional", `Which branch/group they belong to: ${e.voterGroups.join(", ")}. Controls which questions they see.`]] as [string, string, string][]) : []),
+  ];
   return (
     <Modal open={open} onClose={onClose} title="Import voters" wide>
       <div className="form-stack">
-        <p className="muted">
-          Paste rows or choose a CSV file. Columns: <code>name, email, phone, ref, weight, group</code> (a header row is optional; only name is required). Duplicate emails are skipped.
-        </p>
-        <label className="btn btn-outline btn-sm fit">
-          <Upload size={14} /> Choose CSV file
-          <input
-            type="file"
-            accept=".csv,text/csv,text/plain"
-            hidden
-            onChange={async (x) => {
-              const file = x.target.files?.[0];
-              x.target.value = "";
-              if (file) setText(await file.text());
-            }}
-          />
-        </label>
-        <textarea className="input mono" rows={8} value={text} onChange={(x) => setText(x.target.value)} placeholder={"name,email,phone,ref\nAda Obi,ada@example.com,+2348000000000,ALU-001\nBayo Lawal,bayo@example.com,,ALU-002"} />
-        {parsed.length > 0 && (
-          <p className="small">
-            <b>{parsed.length}</b> voter(s) ready. First: {parsed[0]!.name}
-            {parsed[0]!.email ? ` <${parsed[0]!.email}>` : ""}
-          </p>
+        <div className="import-steps">
+          <div>
+            <b>1. Download the template</b>
+            <p className="muted small">It has the right columns for this event and three example rows. Open it in Excel or Google Sheets, replace the examples with your members and save as CSV.</p>
+            <Button kind="outline" size="sm" onClick={() => voterTemplate(e)}>
+              <Download size={14} /> Download CSV template
+            </Button>
+          </div>
+          <div>
+            <b>2. Upload your file</b>
+            <p className="muted small">Or paste rows straight from your spreadsheet below. Common headings like "Full name", "Email address", "Phone number" or "Member ID" are recognised.</p>
+            <label className="btn btn-primary btn-sm fit">
+              <Upload size={14} /> {fileName ? "Choose another file" : "Choose CSV file"}
+              <input
+                type="file"
+                accept=".csv,text/csv,text/plain"
+                hidden
+                onChange={async (x) => {
+                  const file = x.target.files?.[0];
+                  x.target.value = "";
+                  if (!file) return;
+                  if (/\.xlsx?$/i.test(file.name)) return toast.error(new Error("That's an Excel file. In Excel choose File → Save As → CSV (Comma delimited), then upload the .csv file."));
+                  setFileName(file.name);
+                  setText(await file.text());
+                }}
+              />
+            </label>
+          </div>
+        </div>
+        <details className="col-guide">
+          <summary>What goes in each column</summary>
+          <table className="table">
+            <tbody>
+              {cols.map(([c, need, help]) => (
+                <tr key={c}>
+                  <td>
+                    <code>{c}</code>
+                  </td>
+                  <td>{need === "Required" ? <Badge tone="gold">{need}</Badge> : <span className="muted small">{need}</span>}</td>
+                  <td className="small">{help}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          <p className="muted small">Keep the first row as headings. Each voter gets a one-time access code automatically; you don't need to make codes. Voters already on the list (same email) are skipped.</p>
+        </details>
+        <textarea
+          className="input mono"
+          rows={6}
+          value={text}
+          onChange={(x) => (setText(x.target.value), setFileName(""))}
+          placeholder={"name,email,phone,ref\nAdaeze Obi,adaeze.obi@example.com,08031234567,MEM-0001\nBayo Lawal,bayo.lawal@example.com,,MEM-0002"}
+        />
+        {rows.length > 0 && (
+          <div className="import-preview">
+            <p className="small">
+              {fileName && <span className="muted">{fileName}: </span>}
+              <b>{good.length}</b> voter(s) ready to import
+              {bad.length > 0 && (
+                <>
+                  , <b className="red-text">{bad.length} row(s) will be skipped</b>
+                </>
+              )}
+              {warned.length > 0 && <>, {warned.length} with a note</>}.
+            </p>
+            <div className="table-wrap preview-table">
+              <table className="table">
+                <thead>
+                  <tr>
+                    <th>Row</th>
+                    <th>Name</th>
+                    <th>Email</th>
+                    <th>Phone</th>
+                    <th>Ref</th>
+                    {e.settings.ballot.weighted && <th>Weight</th>}
+                    {e.voterGroups.length > 0 && <th>Group</th>}
+                    <th />
+                  </tr>
+                </thead>
+                <tbody>
+                  {[...bad, ...good.filter((r) => r.warning), ...good.filter((r) => !r.warning)].slice(0, 50).map((r) => (
+                    <tr key={r.line} className={r.problem ? "row-bad" : r.warning ? "row-warn" : ""}>
+                      <td className="muted">{r.line}</td>
+                      <td>{r.name}</td>
+                      <td>{r.email}</td>
+                      <td>{r.phone}</td>
+                      <td>{r.ref}</td>
+                      {e.settings.ballot.weighted && <td>{r.weight ?? 1}</td>}
+                      {e.voterGroups.length > 0 && <td>{r.group}</td>}
+                      <td className="small">{r.problem ?? r.warning ?? "OK"}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            {rows.length > 50 && <p className="muted small">Showing problems first, then the first rows. All {good.length} valid rows will be imported.</p>}
+          </div>
         )}
         <div className="modal-actions">
           <Button kind="outline" onClick={onClose}>
@@ -434,13 +608,15 @@ function ImportModal({ e, open, onClose, onDone }: { e: EventDetail; open: boole
           </Button>
           <Button
             busy={busy}
-            disabled={!parsed.length}
+            disabled={!good.length}
             onClick={async () => {
               setBusy(true);
               try {
-                const r = await post<{ added: number; skipped: number }>(`/org/events/${e.id}/voters/import`, { voters: parsed, skipDuplicates: true });
-                toast.ok(`${r.added} added${r.skipped ? `, ${r.skipped} duplicate(s) skipped` : ""}.`);
+                const voters = good.map(({ line, problem, warning, ...v }) => v);
+                const r = await post<{ added: number; skipped: number }>(`/org/events/${e.id}/voters/import`, { voters, skipDuplicates: true });
+                toast.ok(`${r.added} added${r.skipped ? `, ${r.skipped} already on the list` : ""}${bad.length ? `, ${bad.length} row(s) with problems skipped` : ""}.`);
                 setText("");
+                setFileName("");
                 onDone();
                 onClose();
               } catch (err) {
@@ -450,7 +626,7 @@ function ImportModal({ e, open, onClose, onDone }: { e: EventDetail; open: boole
               }
             }}
           >
-            Import {parsed.length || ""} voters
+            Import {good.length || ""} voters
           </Button>
         </div>
       </div>

@@ -34,6 +34,22 @@ npm start          # serves the site + API on PORT (default 3000)
 
 Set `DATABASE_URL`, `APP_SECRET` and `PUBLIC_URL` (see `.env.example`). Any PostgreSQL works (local, Neon, Supabase, Render…); tables are created automatically on start. A `Dockerfile` is included.
 
+### Deploy on Render with Neon
+
+Your `.env` file is never uploaded to GitHub (that's on purpose: it holds your passwords), so Render does not see it. Give Render the same values:
+
+1. **Neon:** Dashboard → your project → **Connect** → copy the connection string. It looks like `postgresql://neondb_owner:…@ep-…-pooler.….neon.tech/neondb?sslmode=require`. Paste only that URL, without `psql` or quotes.
+2. **Render:** New → **Blueprint** → choose this repository (it uses `render.yaml`), or open your existing Web Service → **Environment** and add:
+   - `DATABASE_URL` = the Neon connection string
+   - `PUBLIC_URL` = your Render address, e.g. `https://votehub.onrender.com`
+   - `APP_SECRET` = a long random value (32+ characters). Never change it later.
+   - `NODE_ENV` = `production`
+   - `PAYSTACK_SECRET_KEY` (when you're ready to take subscriptions)
+3. Build command: `npm ci --include=dev && npm run build`. Start command: `npm start`. Health check path: `/api/health`.
+4. After deploying, open `https://<your-app>.onrender.com/api/health`. It should say `"database":"postgres"`. If the deploy fails, the **Logs** tab shows a plain-English reason (wrong password, SSL missing, Neon project suspended…).
+
+Tables are created on the first start, so a brand-new Neon database is fine. On Render's free plan the app sleeps after 15 minutes without visitors and takes ~30 seconds to wake.
+
 Check it works on a fresh database: `node scripts/smoke-test.mjs http://localhost:3000` (41 checks: elections, ranked choice, free + paid votes, roles, security) `node scripts/selfserve-test.mjs http://localhost:3000` (21 checks: sign-up, limits, payments, plan switching with credit, deletion) `node scripts/feature-test.mjs http://localhost:3000` (45 checks: STV, Borda, score, cumulative, write-ins, thresholds, quorum, groups, proxies, passwords, QR, embeds, API keys, event passes), `node scripts/billing-test.mjs` (40 checks: payment methods, manual transfers, automatic renewal, pause/resume, declined cards) and `node scripts/platform-test.mjs` (33 checks: terms acceptance, ads, isolation between organizations). Each expects a fresh, empty database.
 
 ---
@@ -126,11 +142,6 @@ shared/     Voting model shared by server and web (settings schema, templates, p
 web/        React app (landing, dashboard, event builder, public voting pages)
 scripts/    build-server.mjs, smoke-test.mjs
 ```
-
-### Old files you can delete
-
-The previous Replit monorepo is fully replaced. These are no longer used and can be deleted:
-`artifacts/`, `lib/`, `scripts/src/`, `scripts/package.json`, `scripts/tsconfig.json`, `scripts/tsconfig.tsbuildinfo`, `scripts/post-merge.sh`, `pnpm-workspace.yaml`, `pnpm-lock.yaml`, `tsconfig.base.json`, `.npmrc`, `.replitignore`, `.agents/`.
 
 ## Security notes
 

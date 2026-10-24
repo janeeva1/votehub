@@ -34,7 +34,8 @@ export const config = {
   appName: process.env.APP_NAME?.trim() || "VoteHub",
   /** Public URL used in emails and payment redirects, e.g. https://vote.example.com */
   publicUrl: (process.env.PUBLIC_URL?.trim() || `http://localhost:${port}`).replace(/\/$/, ""),
-  databaseUrl: process.env.DATABASE_URL?.trim() || "",
+  // Tolerates connection strings pasted with quotes or the "psql '…'" prefix from the Neon console.
+  databaseUrl: (process.env.DATABASE_URL ?? "").trim().replace(/^psql\s+/, "").replace(/^['"]|['"]$/g, "").trim(),
   dataDir,
   secret: resolveSecret(dataDir),
   /** Comma-separated list of emails that become platform super-admins when they sign up. */
