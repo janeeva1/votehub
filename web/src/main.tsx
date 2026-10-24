@@ -58,6 +58,7 @@ function App() {
       <Route path="/reset-password" component={ResetPassword} />
       <Route path="/invite/:token" component={AcceptInvite} />
       <Route path="/e/:slug" component={PublicEvent} />
+      <Route path="/e/:slug/register" component={PublicEvent} />
       <Route path="/embed/:slug" component={EmbedPage} />
       <Route path="/present/:id">
         <RequireAuth>

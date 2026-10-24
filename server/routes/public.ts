@@ -14,6 +14,7 @@ import { sendMail, mailEnabled } from "../services/mailer";
 import { eventMethods, startPayment, verifyAndFinalize } from "../services/payments";
 import { toMinor, type EventSettings } from "../../shared/model";
 import { audit } from "../services/audit";
+import { decideRegistrations, registrationOpen } from "../services/registrations";
 
 const router = Router();
 const DEVICE_COOKIE = "vh_device";
@@ -74,6 +75,52 @@ async function publicResults(e: Awaited<ReturnType<typeof getEventBySlug>>) {
 
 const ev = (req: Request) => getEventBySlug(String(req.params.slug));
 
+/** Public scoreboard numbers (only when the organizer switched "live progress" on). */
+async function liveStats(e: Awaited<ReturnType<typeof getEventBySlug>>) {
+  if (!e.settings.display.liveStats) return null;
+  const roster = e.settings.access === "roster";
+  const s = await db.one(
+    `SELECT (SELECT count(*)::int FROM ballots WHERE event_id = $1) AS ballots,
+            (SELECT COALESCE(SUM(quantity),0)::float8 FROM votes WHERE event_id = $1 AND source <> 'ballot') AS tally_votes,
+            (SELECT count(*)::int FROM votes WHERE event_id = $1 AND source <> 'ballot' AND created_at > now() - interval '1 hour') AS tally_last_hour,
+            (SELECT count(*)::int FROM ballots WHERE event_id = $1 AND created_at > now() - interval '1 hour') AS ballots_last_hour,
+            GREATEST((SELECT max(created_at) FROM ballots WHERE event_id = $1), (SELECT max(created_at) FROM votes WHERE event_id = $1)) AS last_at,
+            (SELECT count(*)::int FROM voters WHERE event_id = $1) AS eligible,
+            (SELECT count(*)::int FROM voters WHERE event_id = $1 AND voted_at IS NOT NULL) AS voted,
+            (SELECT count(*)::int FROM registrations WHERE event_id = $1) AS registered`,
+    [e.id],
+  );
+  const tallyMode = e.settings.mode === "tally";
+  return {
+    eligible: roster ? s!.eligible : null,
+    voted: roster ? s!.voted : null,
+    turnoutPercent: roster && s!.eligible ? Math.round((s!.voted / s!.eligible) * 1000) / 10 : null,
+    ballots: tallyMode ? null : s!.ballots,
+    votes: tallyMode ? s!.tally_votes : null,
+    lastHour: tallyMode ? s!.tally_last_hour : s!.ballots_last_hour,
+    lastActivityAt: s!.last_at,
+    registered: e.settings.registration.enabled ? s!.registered : null,
+  };
+}
+
+function publicRegistration(e: Awaited<ReturnType<typeof getEventBySlug>>, groups: string[]) {
+  const r = e.settings.registration;
+  if (!r.enabled || e.settings.access !== "roster") return null;
+  return {
+    open: registrationOpen(e),
+    autoApprove: r.autoApprove,
+    phone: r.phone,
+    ref: r.ref,
+    refLabel: r.refLabel,
+    askGroup: r.askGroup,
+    groupLabel: r.groupLabel,
+    groupOptions: r.groupOptions.length ? r.groupOptions : groups,
+    questions: r.questions,
+    message: r.message,
+    closesAt: r.closesAt,
+  };
+}
+
 router.get("/events/:slug", deviceCookie, h(async (req, res) => {
   const e = await ev(req);
   const plan = await limitsOf(e);
@@ -109,8 +156,67 @@ router.get("/events/:slug", deviceCookie, h(async (req, res) => {
       options: options.filter((o) => o.category_id === c.id).map((o) => ({ id: o.id, name: o.name, subtitle: o.subtitle, description: o.description, imageFileId: o.image_file_id, code: o.code })),
     })),
     results: locked ? null : await publicResults(e),
+    live: locked ? null : await liveStats(e),
+    registration: publicRegistration(e, [...new Set(categories.flatMap((c) => (c.voter_groups ?? []) as string[]))]),
     locked,
   });
+}));
+
+router.get("/events/:slug/live", h(async (req, res) => {
+  const e = await ev(req);
+  assertUnlocked(e, typeof req.query.pt === "string" ? req.query.pt : null);
+  res.json({ state: votingState(e), live: await liveStats(e), results: await publicResults(e) });
+}));
+
+const registerLimiter = rateLimit({ windowMs: 60 * 60_000, limit: 20, standardHeaders: "draft-7", legacyHeaders: false, message: { error: "Too many registrations from this network. Please try again later." } });
+
+router.post("/events/:slug/register", registerLimiter, h(async (req, res) => {
+  const e = await ev(req);
+  const r = e.settings.registration;
+  if (!r.enabled || e.settings.access !== "roster") throw notFound("This event doesn't take registrations.");
+  if (!registrationOpen(e)) throw new HttpError(409, "Registration for this event is closed.");
+  const need = (mode: string) => (mode === "required" ? z.string().trim().min(1, "This field is required.") : z.string().trim().optional());
+  const body = parse(
+    z.object({
+      name: z.string().trim().min(2, "Please enter your full name.").max(200),
+      email: z.string().trim().toLowerCase().email("Please enter a valid email address.").max(200),
+      phone: r.phone === "off" ? z.any().optional() : need(r.phone).pipe(z.string().max(40).optional()),
+      ref: r.ref === "off" ? z.any().optional() : need(r.ref).pipe(z.string().max(100).optional()),
+      group: z.string().trim().max(60).optional(),
+      answers: z.record(z.string().max(1000)).default({}),
+      website: z.string().optional(),
+    }),
+    req.body,
+  );
+  if (body.website) throw new HttpError(400, "Your registration could not be accepted.");
+  for (const q of r.questions) if (q.required && !body.answers[q.id]?.trim()) throw new HttpError(400, `Please answer: ${q.label}`);
+  const answers = Object.fromEntries(r.questions.map((q) => [q.id, (body.answers[q.id] ?? "").trim()]).filter(([, v]) => v));
+  const ref = r.ref === "off" ? null : (body.ref as string | undefined)?.trim() || null;
+  const phone = r.phone === "off" ? null : (body.phone as string | undefined)?.trim() || null;
+  const group = r.askGroup && body.group ? body.group : null;
+  // Already on the voter list or already applied?
+  const onList = await db.one("SELECT 1 FROM voters WHERE event_id = $1 AND (lower(email) = $2 OR ($3::text IS NOT NULL AND lower(ref) = lower($3)))", [e.id, body.email, ref]);
+  const dup = await db.one("SELECT status, lower(email) = $2 AS same_email FROM registrations WHERE event_id = $1 AND (lower(email) = $2 OR ($3::text IS NOT NULL AND lower(ref) = lower($3)))", [e.id, body.email, ref]);
+  if (onList) throw conflict("You're already on the voter list for this event. Check your email for your voting code, or contact the organizer.");
+  if (dup) throw conflict(dup.same_email ? `This email has already registered (status: ${dup.status}).` : `This ${r.refLabel.toLowerCase()} has already been used to register. Contact the organizer if that wasn't you.`);
+  const row = await db.one(
+    "INSERT INTO registrations (event_id, name, email, phone, ref, group_name, answers, ip) VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id",
+    [e.id, body.name, body.email, phone, ref, group, JSON.stringify(answers), clientIp(req)],
+  );
+  let status: "pending" | "approved" = "pending";
+  if (r.autoApprove) {
+    const d = await decideRegistrations(e, { id: e.org_id, name: e.org_name, plan: e.org_plan }, [row!.id], "approve", "auto-approval").catch(() => null);
+    if (d?.changed) status = "approved";
+  } else {
+    // Let the organizer's team know someone is waiting (at most a handful of emails: first registrations of the hour).
+    const recent = await db.one<{ n: number }>("SELECT count(*)::int AS n FROM registrations WHERE event_id = $1 AND created_at > now() - interval '1 hour'", [e.id]);
+    if ((recent?.n ?? 0) <= 3) {
+      const staff = await db.query("SELECT u.email FROM org_members m JOIN users u ON u.id = m.user_id WHERE m.org_id = $1 AND m.role IN ('owner','admin','officer')", [e.org_id]);
+      for (const s of staff) void sendMail(s.email, `New registration for ${e.title}`, [`${body.name} registered to vote in "${e.title}".`, "Review and shortlist registrations on the event's Voters tab."], { label: "Review registrations", url: `${config.publicUrl}/app/events/${e.id}/voters` }).catch(() => undefined);
+    }
+  }
+  await audit(null, { orgId: e.org_id, eventId: e.id, action: "registration.submitted", actorLabel: body.email, detail: { name: body.name, autoApproved: status === "approved" } });
+  res.status(201).json({ status, email: body.email });
 }));
 
 router.get("/events/:slug/results", h(async (req, res) => {

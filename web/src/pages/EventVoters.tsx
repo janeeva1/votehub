@@ -2,7 +2,7 @@ import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { BellRing, Download, Mail, MessageCircle, Plus, RotateCcw, Search, Trash2, Upload, UserCheck } from "lucide-react";
 import { canEdit, del, get, patch, post, useConfig, useCurrentOrg, type EventDetail } from "../api";
-import { Badge, Button, ConfirmButton, Empty, Field, Loading, Modal, Panel, fmtDate, fmtNum, useToast } from "../ui";
+import { Badge, Button, ConfirmButton, CopyField, Empty, Field, Loading, Modal, Panel, fmtDate, fmtNum, useToast } from "../ui";
 import { refreshEvent } from "./EventDetail";
 
 interface VoterRow {
@@ -187,6 +187,7 @@ export function VotersTab({ e }: { e: EventDetail }) {
   const turnout = e.stats.voters ? Math.round((e.stats.voted / e.stats.voters) * 100) : 0;
   return (
     <div className="stack">
+      {e.settings.access === "roster" && <RegistrationsPanel e={e} editable={editable} onChanged={reload} />}
       <Panel
         title="Voter list"
         subtitle={`${fmtNum(e.stats.voters)} voters · ${fmtNum(e.stats.voted)} have voted (${turnout}%). Each voter gets a private access code that works once.`}
@@ -631,5 +632,175 @@ function ImportModal({ e, open, onClose, onDone }: { e: EventDetail; open: boole
         </div>
       </div>
     </Modal>
+  );
+}
+
+// ---------------- Registrations (shortlisting) ----------------
+type Reg = { id: string; name: string; email: string | null; phone: string | null; ref: string | null; group_name: string | null; answers: Record<string, string>; status: "pending" | "approved" | "rejected"; decided_by: string | null; decided_at: string | null; created_at: string };
+
+function RegistrationsPanel({ e, editable, onChanged }: { e: EventDetail; editable: boolean; onChanged: () => void }) {
+  const toast = useToast();
+  const [status, setStatus] = useState<"pending" | "approved" | "rejected" | "">("pending");
+  const [q, setQ] = useState("");
+  const [picked, setPicked] = useState<Set<string>>(new Set());
+  const [busy, setBusy] = useState("");
+  const list = useQuery({
+    queryKey: ["registrations", e.id, status, q],
+    queryFn: () => get<{ registrations: Reg[]; counts: { pending: number; approved: number; rejected: number }; link: string }>(`/org/events/${e.id}/registrations?${new URLSearchParams({ ...(status ? { status } : {}), ...(q ? { q } : {}) })}`),
+    refetchInterval: 20_000,
+  });
+  const reg = e.settings.registration;
+  const counts = list.data?.counts;
+  const total = counts ? counts.pending + counts.approved + counts.rejected : 0;
+  if (!reg.enabled && !total) return null;
+  const rows = list.data?.registrations ?? [];
+  const decide = async (ids: string[], decision: "approve" | "reject") => {
+    if (!ids.length) return;
+    setBusy(decision);
+    try {
+      const r = await post<{ changed: number; skipped: string[]; notified: { emailed: number } | null }>(`/org/events/${e.id}/registrations/decide`, { ids, decision });
+      toast.ok(
+        decision === "approve"
+          ? `${r.changed} approved and added to the voter list${r.notified ? `; ${r.notified.emailed} code(s) emailed` : ""}${r.skipped.length ? `. ${r.skipped.length} not added (plan limit)` : ""}.`
+          : `${r.changed} rejected${r.skipped.length ? `. ${r.skipped.length} already voted and were kept` : ""}.`,
+      );
+      setPicked(new Set());
+      void list.refetch();
+      onChanged();
+      refreshEvent(e.id);
+    } catch (err) {
+      toast.error(err);
+    } finally {
+      setBusy("");
+    }
+  };
+  const allPicked = rows.length > 0 && rows.every((r) => picked.has(r.id));
+  const tab = (v: typeof status, label: string, n?: number) => (
+    <button type="button" className={status === v ? "on" : ""} onClick={() => (setStatus(v), setPicked(new Set()))}>
+      {label}
+      {n !== undefined && <span className="tab-badge">{n}</span>}
+    </button>
+  );
+  return (
+    <Panel
+      title="Registrations"
+      subtitle={reg.enabled ? (reg.autoApprove ? "People who register are approved automatically." : "Shortlist who may vote. Approved people join the voter list and get their private code.") : "Registration is switched off; earlier registrations are below."}
+      action={
+        <a className="btn btn-quiet btn-sm" href={`/api/org/events/${e.id}/registrations.csv`} download>
+          <Download size={14} /> Export
+        </a>
+      }
+    >
+      {reg.enabled && list.data && <CopyField label="Registration link (share it in your group chats)" value={list.data.link} />}
+      <div className="reg-toolbar">
+        <div className="seg-tabs">
+          {tab("pending", "Waiting", counts?.pending)}
+          {tab("approved", "Approved", counts?.approved)}
+          {tab("rejected", "Rejected", counts?.rejected)}
+          {tab("", "All")}
+        </div>
+        <div className="search">
+          <Search size={15} />
+          <input placeholder={`Search name, email, ${reg.refLabel.toLowerCase()}`} value={q} onChange={(x) => setQ(x.target.value)} />
+        </div>
+      </div>
+      {editable && picked.size > 0 && (
+        <div className="bulk-bar">
+          <b>{picked.size} selected</b>
+          <Button size="sm" busy={busy === "approve"} onClick={() => decide([...picked], "approve")}>
+            <UserCheck size={14} /> Approve
+          </Button>
+          <Button size="sm" kind="outline" busy={busy === "reject"} onClick={() => decide([...picked], "reject")}>
+            Reject
+          </Button>
+          <button type="button" className="text-link small" onClick={() => setPicked(new Set())}>
+            Clear
+          </button>
+        </div>
+      )}
+      {list.isLoading ? (
+        <Loading />
+      ) : !rows.length ? (
+        <p className="muted small">{status === "pending" ? "No one is waiting for approval." : "Nothing here yet."}</p>
+      ) : (
+        <div className="table-wrap">
+          <table className="table">
+            <thead>
+              <tr>
+                {editable && (
+                  <th>
+                    <input type="checkbox" aria-label="Select all" checked={allPicked} onChange={(x) => setPicked(x.target.checked ? new Set(rows.map((r) => r.id)) : new Set())} />
+                  </th>
+                )}
+                <th>Name</th>
+                {reg.ref !== "off" && <th>{reg.refLabel}</th>}
+                {reg.askGroup && <th>{reg.groupLabel}</th>}
+                {reg.questions.map((qq) => (
+                  <th key={qq.id}>{qq.label}</th>
+                ))}
+                <th>Registered</th>
+                <th>Status</th>
+                {editable && <th />}
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((r) => (
+                <tr key={r.id}>
+                  {editable && (
+                    <td>
+                      <input
+                        type="checkbox"
+                        aria-label={`Select ${r.name}`}
+                        checked={picked.has(r.id)}
+                        onChange={(x) => {
+                          const n = new Set(picked);
+                          x.target.checked ? n.add(r.id) : n.delete(r.id);
+                          setPicked(n);
+                        }}
+                      />
+                    </td>
+                  )}
+                  <td>
+                    <b>{r.name}</b>
+                    <small className="block muted">
+                      {r.email}
+                      {r.phone ? ` · ${r.phone}` : ""}
+                    </small>
+                  </td>
+                  {reg.ref !== "off" && <td className="mono small">{r.ref}</td>}
+                  {reg.askGroup && <td className="small">{r.group_name}</td>}
+                  {reg.questions.map((qq) => (
+                    <td key={qq.id} className="small">
+                      {r.answers?.[qq.id]}
+                    </td>
+                  ))}
+                  <td className="small">{fmtDate(r.created_at)}</td>
+                  <td>
+                    <Badge tone={r.status === "approved" ? "green" : r.status === "rejected" ? "red" : "gold"}>{r.status === "pending" ? "Waiting" : r.status}</Badge>
+                    {r.decided_by && <small className="block muted">by {r.decided_by}</small>}
+                  </td>
+                  {editable && (
+                    <td>
+                      <div className="btn-row nowrap">
+                        {r.status !== "approved" && (
+                          <Button size="sm" kind="outline" onClick={() => decide([r.id], "approve")}>
+                            Approve
+                          </Button>
+                        )}
+                        {r.status !== "rejected" && (
+                          <Button size="sm" kind="quiet" onClick={() => decide([r.id], "reject")}>
+                            Reject
+                          </Button>
+                        )}
+                      </div>
+                    </td>
+                  )}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </Panel>
   );
 }

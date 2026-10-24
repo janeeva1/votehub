@@ -227,6 +227,29 @@ export const eventSettingsSchema = z.object({
       showCodes: z.boolean().default(false),
       accentColor: z.string().regex(/^#[0-9a-fA-F]{6}$/).optional(),
       thankYouMessage: z.string().max(500).default("Thank you — your vote has been recorded."),
+      /** Big live scoreboard (turnout, votes, last activity, countdown) on the public page and presenter screen. */
+      liveStats: z.boolean().default(false),
+    })
+    .default({}),
+  /** Public self-registration: people apply with a link, organizers shortlist who may vote (voter-list events). */
+  registration: z
+    .object({
+      enabled: z.boolean().default(false),
+      /** Approve everyone automatically instead of shortlisting. */
+      autoApprove: z.boolean().default(false),
+      /** Email the voting code as soon as someone is approved. */
+      sendCodeOnApproval: z.boolean().default(true),
+      phone: z.enum(["off", "optional", "required"]).default("optional"),
+      /** The member identifier, e.g. "Matric number", "Membership ID", "Staff ID". */
+      refLabel: z.string().trim().max(40).default("Membership ID"),
+      ref: z.enum(["off", "optional", "required"]).default("optional"),
+      /** Let applicants pick their voter group (branch, set, department). */
+      askGroup: z.boolean().default(false),
+      groupLabel: z.string().trim().max(40).default("Branch / group"),
+      groupOptions: z.array(z.string().trim().min(1).max(60)).max(60).default([]),
+      questions: z.array(z.object({ id: z.string().max(20), label: z.string().trim().min(1).max(120), required: z.boolean().default(false) })).max(6).default([]),
+      message: z.string().max(1000).default(""),
+      closesAt: z.string().datetime({ offset: true }).nullable().default(null),
     })
     .default({}),
 });

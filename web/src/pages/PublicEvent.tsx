@@ -1,12 +1,36 @@
 import { AdSlot } from "../ads";
 import { useEffect, useMemo, useState, type FormEvent } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { useParams } from "wouter";
-import { ArrowDown, ArrowUp, BadgeCheck, CalendarClock, Check, CreditCard, KeyRound, Lock, Mail, Minus, Plus, Trophy, Users, Vote } from "lucide-react";
+import { useParams, useRoute } from "wouter";
+import { Activity, ArrowDown, ArrowUp, BadgeCheck, CalendarClock, ClipboardList, Clock3, Check, CreditCard, KeyRound, Lock, Mail, Minus, Plus, Trophy, Users, Vote } from "lucide-react";
 import { ApiError, fileUrl, get, post } from "../api";
 import { Badge, Bar, Button, Field, Loading, Modal, fmtDate, fmtNum, useToast } from "../ui";
 import { formatMoney } from "@shared/model";
 import { AgreeBox, VoterNotice } from "./Legal";
+
+interface LiveStats {
+  eligible: number | null;
+  voted: number | null;
+  turnoutPercent: number | null;
+  ballots: number | null;
+  votes: number | null;
+  lastHour: number;
+  lastActivityAt: string | null;
+  registered: number | null;
+}
+interface PubRegistration {
+  open: boolean;
+  autoApprove: boolean;
+  phone: "off" | "optional" | "required";
+  ref: "off" | "optional" | "required";
+  refLabel: string;
+  askGroup: boolean;
+  groupLabel: string;
+  groupOptions: string[];
+  questions: { id: string; label: string; required: boolean }[];
+  message: string;
+  closesAt: string | null;
+}
 
 interface PubOption {
   id: string;
@@ -42,6 +66,8 @@ export interface PubResults {
   categories: { id: string; title: string; method: string; seats: number; totalVotes: number | null; threshold?: { percent: number; met: boolean }; quota?: number; options: PubResultOption[] }[];
 }
 export interface PubEvent {
+  live: LiveStats | null;
+  registration: PubRegistration | null;
   paymentMethods: { id: string; label: string; kind: "gateway" | "manual" | "test" }[];
   slug: string;
   title: string;
@@ -126,6 +152,14 @@ const saveSession = (slug: string, s: Session | null) => {
   }
 };
 
+function countdown(ms: number) {
+  const d = Math.floor(ms / 86400000);
+  const h = Math.floor((ms % 86400000) / 3600000);
+  const m = Math.floor((ms % 3600000) / 60000);
+  const s = Math.floor((ms % 60000) / 1000);
+  return d > 0 ? `${d}d ${h}h ${m}m` : `${h}h ${m}m ${s}s`;
+}
+
 function useCountdown(target: string | null) {
   const [now, setNow] = useState(Date.now());
   useEffect(() => {
@@ -146,11 +180,17 @@ function useCountdown(target: string | null) {
 export function PublicEvent() {
   const { slug = "" } = useParams<{ slug: string }>();
   const params = new URLSearchParams(location.search);
+  const [registerMode] = useRoute("/e/:slug/register");
   const [passToken, setPassToken] = useState<string | null>(() => loadPt(slug));
   const q = useQuery({
     queryKey: ["public", slug, passToken],
     queryFn: () => get<PubEvent>(`/public/events/${slug}${passToken ? `?pt=${encodeURIComponent(passToken)}` : ""}`),
-    refetchInterval: (query) => (query.state.data?.settings.results.visibility === "live" && query.state.data.state === "open" ? 15_000 : false),
+    refetchInterval: (query) => {
+      const d = query.state.data;
+      if (!d || d.state !== "open") return false;
+      if (d.live) return 8_000;
+      return d.settings.results.visibility === "live" ? 15_000 : false;
+    },
     retry: false,
   });
   const [session, setSession] = useState<Session | null>(() => loadSession(slug));
@@ -234,15 +274,26 @@ export function PublicEvent() {
         </div>
       </section>
 
+      {e.live && !e.locked && <LiveScoreboard e={e} live={e.live} />}
+
       <main className="public-main">
         {cancelled && <div className="notice">Payment was cancelled — no votes were added. You can try again.</div>}
-        {e.locked ? (
+        {!e.locked && registerMode && e.registration ? (
+          <RegisterForm slug={slug} e={e} reg={e.registration} />
+        ) : e.locked ? (
           <PasswordGate slug={slug} onUnlock={(t) => (savePt(slug, t), setPassToken(t))} />
         ) : done ? (
           <ThankYou done={done} e={e} onBack={() => setDone(null)} />
         ) : open && needsAccess ? (
           e.settings.access === "roster" ? (
-            <CodeGate slug={slug} initial={params.get("code") ?? ""} onAccess={(s, f) => (setSess(s), setFreeUsed(f))} />
+            <>
+              <CodeGate slug={slug} initial={params.get("code") ?? ""} onAccess={(s, f) => (setSess(s), setFreeUsed(f))} />
+              {e.registration?.open && (
+                <p className="center-text register-hint">
+                  Not on the voter list yet? <a href={`/e/${slug}/register`}>Register to vote</a>
+                </p>
+              )}
+            </>
           ) : (
             <EmailGate slug={slug} mailEnabled={e.mailEnabled} onAccess={(s, f) => (setSess(s), setFreeUsed(f))} />
           )
@@ -259,7 +310,10 @@ export function PublicEvent() {
         ) : open && e.settings.mode === "tally" ? (
           <TallyBoard e={e} session={session} passToken={ctx.passToken} freeUsed={freeUsed} setFreeUsed={setFreeUsed} onVoted={() => void q.refetch()} />
         ) : (
-          <ClosedNotice e={e} />
+          <>
+            <ClosedNotice e={e} />
+            {e.state === "not_started" && e.registration?.open && <RegisterForm slug={slug} e={e} reg={e.registration} />}
+          </>
         )}
 
         {e.results && <ResultsView e={e} results={e.results} />}
@@ -1143,5 +1197,224 @@ function ReceiptCheck({ slug }: { slug: string }) {
       </form>
       {result && <p className="small">{result}</p>}
     </details>
+  );
+}
+
+// ---------------- Live scoreboard ----------------
+function useCountUp(target: number) {
+  const [shown, setShown] = useState(target);
+  useEffect(() => {
+    if (shown === target) return;
+    if (window.matchMedia?.("(prefers-reduced-motion: reduce)").matches) return setShown(target);
+    const from = shown;
+    const start = performance.now();
+    let raf = 0;
+    const step = (t: number) => {
+      const k = Math.min(1, (t - start) / 900);
+      setShown(Math.round(from + (target - from) * (1 - Math.pow(1 - k, 3))));
+      if (k < 1) raf = requestAnimationFrame(step);
+    };
+    raf = requestAnimationFrame(step);
+    return () => cancelAnimationFrame(raf);
+  }, [target]); // eslint-disable-line react-hooks/exhaustive-deps
+  return shown;
+}
+
+function ago(iso: string | null, now: number) {
+  if (!iso) return "No votes yet";
+  const s = Math.max(0, Math.round((now - new Date(iso).getTime()) / 1000));
+  if (s < 60) return "Just now";
+  if (s < 3600) return `${Math.floor(s / 60)} min ago`;
+  if (s < 86400) return `${Math.floor(s / 3600)} h ago`;
+  return fmtDate(iso);
+}
+
+function LiveScoreboard({ e, live }: { e: PubEvent; live: LiveStats }) {
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, []);
+  const main = live.voted ?? live.ballots ?? live.votes ?? 0;
+  const shown = useCountUp(main);
+  const open = e.state === "open";
+  const endsIn = e.endsAt ? new Date(e.endsAt).getTime() - now : null;
+  const label = live.voted !== null ? "have voted" : live.ballots !== null ? "ballots cast" : "votes so far";
+  return (
+    <section className={`scoreboard ${open ? "is-open" : ""}`} aria-live="polite">
+      <div className="scoreboard-inner">
+        <div className="sb-main">
+          <span className="sb-live">{open ? <><i /> Live</> : e.state === "not_started" ? "Starting soon" : "Final"}</span>
+          <b className="sb-number">{fmtNum(shown)}</b>
+          <span className="sb-label">
+            {live.eligible === 0 ? (live.registered ? `${label} · the voter list is being prepared` : label) : label}
+            {!!live.eligible && <> out of {fmtNum(live.eligible)} eligible voters</>}
+          </span>
+          {live.turnoutPercent !== null && (
+            <div className="sb-turnout">
+              <div className="sb-track">
+                <span style={{ width: `${Math.min(100, live.turnoutPercent)}%` }} />
+              </div>
+              <b>{live.turnoutPercent}% turnout</b>
+            </div>
+          )}
+        </div>
+        <div className="sb-facts">
+          {endsIn !== null && open && endsIn > 0 && (
+            <div>
+              <Clock3 size={16} />
+              <span>
+                <b>{countdown(endsIn)}</b>
+                <small>left to vote</small>
+              </span>
+            </div>
+          )}
+          <div>
+            <Activity size={16} />
+            <span>
+              <b>{fmtNum(live.lastHour)}</b>
+              <small>in the last hour</small>
+            </span>
+          </div>
+          <div>
+            <CalendarClock size={16} />
+            <span>
+              <b>{ago(live.lastActivityAt, now)}</b>
+              <small>last vote</small>
+            </span>
+          </div>
+          {live.registered !== null && (
+            <div>
+              <ClipboardList size={16} />
+              <span>
+                <b>{fmtNum(live.registered)}</b>
+                <small>registered</small>
+              </span>
+            </div>
+          )}
+        </div>
+      </div>
+    </section>
+  );
+}
+
+// ---------------- Public registration ----------------
+function RegisterForm({ slug, e, reg }: { slug: string; e: PubEvent; reg: PubRegistration }) {
+  const [form, setForm] = useState<Record<string, string>>({});
+  const [answers, setAnswers] = useState<Record<string, string>>({});
+  const [honeypot, setHoneypot] = useState("");
+  const [agree, setAgree] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [done, setDone] = useState<{ status: string; email: string } | null>(null);
+  if (!reg.open)
+    return (
+      <div className="panel center-text">
+        <ClipboardList size={32} className="accent-icon" />
+        <h2>Registration is closed</h2>
+        <p className="muted">The organizer is no longer taking registrations for this event. If you already registered, watch your email for your voting code.</p>
+      </div>
+    );
+  if (done)
+    return (
+      <div className="panel center-text register-done">
+        <BadgeCheck size={40} className="accent-icon" />
+        <h2>{done.status === "approved" ? "You're on the voter list" : "Registration received"}</h2>
+        <p>
+          {done.status === "approved"
+            ? `Your private voting code has been sent to ${done.email}.`
+            : `Thank you. The organizer will review your registration. If you're shortlisted, your private voting code will be sent to ${done.email}.`}
+        </p>
+        <a className="text-link" href={`/e/${slug}`}>
+          Back to the voting page
+        </a>
+      </div>
+    );
+  const set = (k: string, v: string) => setForm({ ...form, [k]: v });
+  const req = (m: string) => m === "required";
+  return (
+    <form
+      className="panel register-form"
+      onSubmit={async (ev) => {
+        ev.preventDefault();
+        setBusy(true);
+        setError("");
+        try {
+          const r = await post<{ status: string; email: string }>(`/public/events/${slug}/register`, { ...form, answers, website: honeypot || undefined });
+          setDone(r);
+        } catch (err) {
+          setError((err as Error).message);
+        } finally {
+          setBusy(false);
+        }
+      }}
+    >
+      <div className="register-head">
+        <ClipboardList size={26} className="accent-icon" />
+        <div>
+          <h2>Register to vote</h2>
+          <p className="muted">
+            {reg.autoApprove ? "Fill in your details and you'll get your voting code by email." : "Fill in your details. The organizer checks every registration and sends a voting code to those who are eligible."}
+            {reg.closesAt && ` Registration closes ${fmtDate(reg.closesAt)}.`}
+          </p>
+        </div>
+      </div>
+      {reg.message && <p className="prewrap register-message">{reg.message}</p>}
+      {error && <div className="inline-error">{error}</div>}
+      <div className="grid-2 tight">
+        <Field label="Full name">
+          <input className="input" required minLength={2} maxLength={200} autoComplete="name" value={form.name ?? ""} onChange={(x) => set("name", x.target.value)} />
+        </Field>
+        <Field label="Email">
+          <input className="input" type="email" required autoComplete="email" value={form.email ?? ""} onChange={(x) => set("email", x.target.value)} />
+        </Field>
+        {reg.ref !== "off" && (
+          <Field label={`${reg.refLabel}${req(reg.ref) ? "" : " (optional)"}`}>
+            <input className="input" required={req(reg.ref)} maxLength={100} value={form.ref ?? ""} onChange={(x) => set("ref", x.target.value)} />
+          </Field>
+        )}
+        {reg.phone !== "off" && (
+          <Field label={`Phone${req(reg.phone) ? "" : " (optional)"}`}>
+            <input className="input" type="tel" required={req(reg.phone)} autoComplete="tel" maxLength={40} placeholder="0803 123 4567" value={form.phone ?? ""} onChange={(x) => set("phone", x.target.value)} />
+          </Field>
+        )}
+        {reg.askGroup && (
+          <Field label={reg.groupLabel}>
+            {reg.groupOptions.length ? (
+              <select className="input" required value={form.group ?? ""} onChange={(x) => set("group", x.target.value)}>
+                <option value="" disabled>
+                  Choose…
+                </option>
+                {reg.groupOptions.map((g) => (
+                  <option key={g}>{g}</option>
+                ))}
+              </select>
+            ) : (
+              <input className="input" required maxLength={60} value={form.group ?? ""} onChange={(x) => set("group", x.target.value)} />
+            )}
+          </Field>
+        )}
+        {reg.questions.map((q) => (
+          <Field key={q.id} label={`${q.label}${q.required ? "" : " (optional)"}`}>
+            <input className="input" required={q.required} maxLength={1000} value={answers[q.id] ?? ""} onChange={(x) => setAnswers({ ...answers, [q.id]: x.target.value })} />
+          </Field>
+        ))}
+      </div>
+      {e.settings.security.botProtection && <Honeypot onChange={setHoneypot} />}
+      <AgreeBox checked={agree} onChange={setAgree}>
+        I confirm these details are true and agree to the{" "}
+        <a href="/terms" target="_blank" rel="noreferrer">
+          Terms
+        </a>{" "}
+        and{" "}
+        <a href="/privacy" target="_blank" rel="noreferrer">
+          Privacy Policy
+        </a>
+        . My details are shared with {e.org.name} to check my eligibility.
+      </AgreeBox>
+      <Button type="submit" size="lg" busy={busy} disabled={!agree}>
+        Submit registration
+      </Button>
+    </form>
   );
 }

@@ -306,4 +306,30 @@ CREATE TABLE ads (
 );
 `,
   },
+  {
+    id: 5,
+    name: "public voter registration",
+    sql: `
+CREATE TABLE registrations (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  event_id UUID NOT NULL REFERENCES events(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  email TEXT,
+  phone TEXT,
+  ref TEXT,
+  group_name TEXT,
+  answers JSONB NOT NULL DEFAULT '{}',
+  status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','approved','rejected')),
+  voter_id UUID REFERENCES voters(id) ON DELETE SET NULL,
+  note TEXT,
+  ip TEXT,
+  decided_by TEXT,
+  decided_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX registrations_event_idx ON registrations(event_id, status);
+CREATE UNIQUE INDEX registrations_event_email_uq ON registrations(event_id, lower(email)) WHERE email IS NOT NULL;
+CREATE UNIQUE INDEX registrations_event_ref_uq ON registrations(event_id, lower(ref)) WHERE ref IS NOT NULL;
+`,
+  },
 ];

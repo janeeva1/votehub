@@ -17,6 +17,8 @@ import { sendMail } from "../services/mailer";
 import { verifyAndFinalize } from "../services/payments";
 import { METHODS, TEMPLATES, eventSettingsSchema, mergeSettings, fromMinor } from "../../shared/model";
 import { slugify } from "./orgs";
+import { assertVoterCapacity, notifyVoters, uniqueAccessCode } from "../services/voters";
+import { decideRegistrations } from "../services/registrations";
 
 const router = Router();
 router.use(requireUser, requireOrg);
@@ -284,7 +286,7 @@ router.post("/events/:id/status", requireRole("officer"), h(async (req, res) => 
     if (empty && !(e.settings.mode === "tally" && e.settings.nominations.enabled)) throw conflict(`"${empty.title}" has no options yet. Add at least one before going live.`);
     if (e.settings.access === "roster") {
       const voters = await db.one<{ n: number }>("SELECT count(*)::int AS n FROM voters WHERE event_id = $1", [e.id]);
-      if (!voters?.n) throw conflict("This event uses a voter list. Add voters before going live.");
+      if (!voters?.n && !e.settings.registration.enabled) throw conflict("This event uses a voter list. Add voters (or turn on public registration) before going live.");
     }
     if (e.settings.paid.enabled && !(await eventMethods(e.settings.paid, req.org!.id)).length) {
       throw conflict("Paid voting is on, but no payment method is available. Connect a gateway or add a manual method (e.g. bank transfer) in Organization settings → Payment methods.");
@@ -482,22 +484,7 @@ const voterInput = z.object({
   group: z.string().trim().max(60).nullable().optional(),
 });
 
-async function assertVoterCapacity(orgPlan: string, e: EventRow, adding: number) {
-  const limits = await eventLimits(orgPlan, null, e.pass_voters);
-  if (limits.maxVoters === null) return;
-  const r = await db.one<{ n: number }>("SELECT count(*)::int AS n FROM voters WHERE event_id = $1", [e.id]);
-  if ((r?.n ?? 0) + adding > limits.maxVoters) {
-    throw new HttpError(402, `This event allows ${limits.maxVoters} voters on your current plan. Upgrade your plan or buy an event pass to add more.`);
-  }
-}
 
-async function uniqueAccessCode(eventId: string, q: Queryable = db) {
-  for (let i = 0; i < 10; i++) {
-    const code = humanCode(8);
-    if (!(await q.one("SELECT 1 FROM voters WHERE event_id = $1 AND access_code = $2", [eventId, code]))) return code;
-  }
-  throw new HttpError(500, "Could not generate a unique access code.");
-}
 
 router.get("/events/:id/voters", h(async (req, res) => {
   const e = await ev(req);
@@ -637,37 +624,6 @@ router.delete("/events/:id/voters/:vid", requireRole("officer"), h(async (req, r
   res.json({ ok: true });
 }));
 
-async function notifyVoters(req: Request, e: EventRow, rows: any[], kind: "invite" | "reminder", useSms: boolean) {
-  let emailed = 0;
-  let texted = 0;
-  let logged = 0;
-  for (const v of rows) {
-    const url = `${config.publicUrl}/e/${e.slug}?code=${v.access_code}`;
-    const closes = e.ends_at ? `Voting closes ${new Date(e.ends_at).toUTCString()}.` : "";
-    if (v.email) {
-      const r = await sendMail(
-        v.email,
-        kind === "invite" ? `Your voting access for ${e.title}` : `Reminder: you haven't voted yet in ${e.title}`,
-        [
-          `Hello ${v.name},`,
-          kind === "invite" ? `You are on the voter list for "${e.title}" (${req.org?.name ?? ""}).` : `This is a friendly reminder that you haven't voted yet in "${e.title}".`,
-          `Your personal access code is: ${v.access_code}`,
-          closes,
-          "Keep this code private — it lets you cast your ballot once.",
-        ].filter(Boolean),
-        { label: "Open my ballot", url },
-      );
-      if (r.delivered) emailed++;
-      else logged++;
-    }
-    if (useSms && v.phone) {
-      const r = await sendSms(v.phone, `${kind === "invite" ? "Vote" : "Reminder: vote"} in ${e.title}. Code: ${v.access_code} ${url}`);
-      if (r.delivered) texted++;
-    }
-    await db.query(kind === "invite" ? "UPDATE voters SET invited_at = now() WHERE id = $1" : "UPDATE voters SET last_reminded_at = now() WHERE id = $1", [v.id]);
-  }
-  return { processed: rows.length, emailed, texted, loggedOnly: logged };
-}
 
 router.post("/events/:id/voters/invite", requireRole("officer"), h(async (req, res) => {
   const e = await ev(req);
@@ -679,7 +635,7 @@ router.post("/events/:id/voters/invite", requireRole("officer"), h(async (req, r
        ${body.voterIds ? "AND id = ANY($2::uuid[])" : body.onlyNotInvited ? "AND invited_at IS NULL" : ""}`,
     body.voterIds ? [e.id, body.voterIds] : [e.id],
   );
-  const result = await notifyVoters(req, e, rows, "invite", useSms);
+  const result = await notifyVoters(e, req.org!.name, rows, "invite", useSms);
   await audit(req, { orgId: req.org!.id, eventId: e.id, action: "voters.invited", detail: { count: rows.length, sms: useSms } });
   res.json(result);
 }));
@@ -694,7 +650,7 @@ router.post("/events/:id/voters/remind", requireRole("officer"), h(async (req, r
         AND (email IS NOT NULL ${useSms ? "OR phone IS NOT NULL" : ""})`,
     [e.id],
   );
-  const result = await notifyVoters(req, e, rows, "reminder", useSms);
+  const result = await notifyVoters(e, req.org!.name, rows, "reminder", useSms);
   await audit(req, { orgId: req.org!.id, eventId: e.id, action: "voters.reminded", detail: { count: rows.length, sms: useSms } });
   res.json(result);
 }));
@@ -814,6 +770,46 @@ router.post("/payments/:ref/:decision", requireRole("officer"), h(async (req, re
   const r = await decideManualPayment(String(req.params.ref), req.org!.id, approve, req.user!.email);
   await audit(req, { orgId: req.org!.id, action: approve ? "payment.manual_approved" : "payment.manual_rejected", detail: { reference: req.params.ref } });
   res.json(r);
+}));
+
+// ---------------- Public registration (apply → shortlist) ----------------
+router.get("/events/:id/registrations", h(async (req, res) => {
+  const e = await ev(req);
+  const status = typeof req.query.status === "string" && ["pending", "approved", "rejected"].includes(req.query.status) ? req.query.status : null;
+  const q = typeof req.query.q === "string" ? req.query.q.trim().toLowerCase() : "";
+  const params: unknown[] = [e.id];
+  let where = "";
+  if (status) {
+    params.push(status);
+    where += ` AND status = $${params.length}`;
+  }
+  if (q) {
+    params.push(`%${q}%`);
+    where += ` AND (lower(name) LIKE $${params.length} OR lower(coalesce(email,'')) LIKE $${params.length} OR lower(coalesce(ref,'')) LIKE $${params.length} OR coalesce(phone,'') LIKE $${params.length})`;
+  }
+  const rows = await db.query(`SELECT id, name, email, phone, ref, group_name, answers, status, note, decided_by, decided_at, created_at FROM registrations WHERE event_id = $1 ${where} ORDER BY created_at DESC LIMIT 2000`, params);
+  const counts = await db.one("SELECT count(*) FILTER (WHERE status='pending')::int AS pending, count(*) FILTER (WHERE status='approved')::int AS approved, count(*) FILTER (WHERE status='rejected')::int AS rejected FROM registrations WHERE event_id = $1", [e.id]);
+  res.json({ registrations: rows, counts, link: `${config.publicUrl}/e/${e.slug}/register` });
+}));
+
+router.post("/events/:id/registrations/decide", requireRole("officer"), h(async (req, res) => {
+  const e = await ev(req);
+  const body = parse(z.object({ ids: z.array(uuid).min(1).max(5000), decision: z.enum(["approve", "reject"]), note: z.string().trim().max(300).optional() }), req.body);
+  const r = await decideRegistrations(e, { id: req.org!.id, name: req.org!.name, plan: req.org!.plan }, body.ids, body.decision, req.user!.email, body.note);
+  await audit(req, { orgId: req.org!.id, eventId: e.id, action: body.decision === "approve" ? "registrations.approved" : "registrations.rejected", detail: { count: r.changed, skipped: r.skipped.length } });
+  res.json(r);
+}));
+
+router.get("/events/:id/registrations.csv", requireRole("officer"), h(async (req, res) => {
+  const e = await ev(req);
+  const rows = await db.query("SELECT * FROM registrations WHERE event_id = $1 ORDER BY created_at", [e.id]);
+  const r = e.settings.registration;
+  const qs = r.questions;
+  const out = [["name", "email", "phone", r.refLabel || "ref", r.groupLabel || "group", ...qs.map((x) => x.label), "status", "registered_at", "decided_by"]];
+  for (const x of rows) out.push([x.name, x.email, x.phone, x.ref, x.group_name, ...qs.map((q) => x.answers?.[q.id] ?? ""), x.status, new Date(x.created_at).toISOString(), x.decided_by]);
+  res.setHeader("Content-Type", "text/csv; charset=utf-8");
+  res.setHeader("Content-Disposition", `attachment; filename="${e.slug}-registrations.csv"`);
+  res.send("﻿" + toCsv(out));
 }));
 
 export default router;

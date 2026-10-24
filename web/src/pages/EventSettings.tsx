@@ -3,7 +3,7 @@ import { useState } from "react";
 import { Link } from "wouter";
 import { Plus, Save, Trash2 } from "lucide-react";
 import { canEdit, patch, useConfig, useCurrentOrg, type EventDetail } from "../api";
-import { Button, Field, ImageUpload, Panel, Segmented, Toggle, fromLocalInput, toLocalInput, useToast } from "../ui";
+import { Button, CopyField, Field, ImageUpload, Panel, Segmented, Toggle, fromLocalInput, toLocalInput, useToast } from "../ui";
 import { CURRENCIES, formatMoney, type EventSettings } from "@shared/model";
 import { refreshEvent } from "./EventDetail";
 
@@ -104,6 +104,8 @@ export function SettingsTab({ e }: { e: EventDetail }) {
           />
           {s.access === "email" && !cfg.data?.mailEnabled && <p className="warn-text">Email isn't configured on this server, so voters won't receive codes. Configure SMTP or choose another option.</p>}
         </Panel>
+
+        {s.access === "roster" && <RegistrationSettings e={e} s={s} set={set} orgType={org?.orgType ?? ""} />}
 
         {!isTally && (
           <Panel title="Ballot rules">
@@ -288,6 +290,23 @@ export function SettingsTab({ e }: { e: EventDetail }) {
           {!isTally && s.ballot.secret && <p className="muted small">With a secret ballot, these details are never stored with the ballot.</p>}
         </Panel>
 
+        <Panel title="Live scoreboard" subtitle="Show progress boldly on the voting page so everyone can follow along. You can switch this off at any time.">
+          <div className="toggle-list">
+            <Toggle
+              label="Show live progress"
+              hint={s.access === "roster" ? "A big banner with how many have voted out of the voter list, turnout %, votes in the last hour and the countdown. Updates every few seconds." : "A big banner with the number of votes, votes in the last hour, the last vote and the countdown. Updates every few seconds."}
+              checked={s.display.liveStats}
+              onChange={(v) => set("display", { liveStats: v })}
+            />
+            <Toggle
+              label="Show who's leading while voting is open"
+              hint="Same as choosing “Live” under Results below. Leave off for secret elections where results should wait until the end."
+              checked={s.results.visibility === "live"}
+              onChange={(v) => set("results", { visibility: v ? "live" : "after_close" })}
+            />
+          </div>
+        </Panel>
+
         <Panel title="Results">
           <Segmented
             value={s.results.visibility}
@@ -345,5 +364,103 @@ export function SettingsTab({ e }: { e: EventDetail }) {
         </div>
       )}
     </div>
+  );
+}
+
+// ---------------- Public registration settings ----------------
+function RegistrationSettings({ e, s, set, orgType }: { e: EventDetail; s: EventSettings; set: <K extends keyof EventSettings>(k: K, v: Partial<EventSettings[K]>) => void; orgType: string }) {
+  const r = s.registration;
+  const link = `${location.origin}/e/${e.slug}/register`;
+  const academic = /alumni|school|university|student|college|polytechnic/i.test(orgType);
+  const enable = (v: boolean) => {
+    if (v && academic && r.refLabel === "Membership ID" && r.questions.length === 0) {
+      // Alumni/school groups: ask for matric number and graduation year by default.
+      set("registration", { enabled: true, refLabel: "Matric number", ref: "required", questions: [{ id: "q1", label: "Year of graduation", required: true }] });
+    } else set("registration", { enabled: v });
+  };
+  const modes = [
+    { value: "off", label: "Don't ask" },
+    { value: "optional", label: "Optional" },
+    { value: "required", label: "Required" },
+  ] as const;
+  return (
+    <Panel title="Public registration" subtitle="Share a link where people apply to vote. You then shortlist who is eligible; approved people get their private voting code.">
+      <div className="toggle-list">
+        <Toggle label="Let people register with a link" checked={r.enabled} onChange={enable} />
+      </div>
+      {r.enabled && (
+        <div className="form-stack">
+          <CopyField label="Registration link to share" value={link} />
+          <p className="muted small">People can register while the event is published and not yet closed. To take registrations before voting starts, set a start time in the future and publish the event.</p>
+          <div className="toggle-list">
+            <Toggle label="Approve everyone automatically" hint="Off = you shortlist each person on the Voters tab (recommended for elections)." checked={r.autoApprove} onChange={(v) => set("registration", { autoApprove: v })} />
+            <Toggle label="Email the voting code as soon as someone is approved" checked={r.sendCodeOnApproval} onChange={(v) => set("registration", { sendCodeOnApproval: v })} />
+          </div>
+          <div className="grid-3 tight">
+            <Field label="ID field name" hint={academic ? "e.g. Matric number" : "e.g. Membership ID, Staff ID"}>
+              <input className="input" maxLength={40} value={r.refLabel} onChange={(x) => set("registration", { refLabel: x.target.value })} />
+            </Field>
+            <Field label="Ask for it?">
+              <select className="input" value={r.ref} onChange={(x) => set("registration", { ref: x.target.value as any })}>
+                {modes.map((m) => (
+                  <option key={m.value} value={m.value}>
+                    {m.label}
+                  </option>
+                ))}
+              </select>
+            </Field>
+            <Field label="Phone number">
+              <select className="input" value={r.phone} onChange={(x) => set("registration", { phone: x.target.value as any })}>
+                {modes.map((m) => (
+                  <option key={m.value} value={m.value}>
+                    {m.label}
+                  </option>
+                ))}
+              </select>
+            </Field>
+          </div>
+          <div className="toggle-list">
+            <Toggle label="Ask which group they belong to" hint="Branch, chapter, set, department… Used for questions only some groups vote on." checked={r.askGroup} onChange={(v) => set("registration", { askGroup: v })} />
+          </div>
+          {r.askGroup && (
+            <div className="grid-2 tight">
+              <Field label="Group field name">
+                <input className="input" maxLength={40} value={r.groupLabel} onChange={(x) => set("registration", { groupLabel: x.target.value })} />
+              </Field>
+              <Field label="Choices (comma separated)" hint={e.voterGroups.length ? `Leave empty to use: ${e.voterGroups.join(", ")}` : "Leave empty to let people type it"}>
+                <input className="input" value={r.groupOptions.join(", ")} onChange={(x) => set("registration", { groupOptions: x.target.value.split(",").map((g) => g.trim()).filter(Boolean) })} />
+              </Field>
+            </div>
+          )}
+          <div>
+            <span className="field-label">Extra questions</span>
+            {r.questions.map((q, i) => (
+              <div key={q.id} className="bundle-row q-row">
+                <input className="input" maxLength={120} value={q.label} placeholder="e.g. Year of graduation" onChange={(x) => set("registration", { questions: r.questions.map((y, j) => (j === i ? { ...y, label: x.target.value } : y)) })} />
+                <label className="check small">
+                  <input type="checkbox" checked={q.required} onChange={(x) => set("registration", { questions: r.questions.map((y, j) => (j === i ? { ...y, required: x.target.checked } : y)) })} /> Required
+                </label>
+                <button type="button" className="icon-btn" aria-label="Remove question" onClick={() => set("registration", { questions: r.questions.filter((_, j) => j !== i) })}>
+                  <Trash2 size={14} />
+                </button>
+              </div>
+            ))}
+            {r.questions.length < 6 && (
+              <Button size="sm" kind="outline" onClick={() => set("registration", { questions: [...r.questions, { id: `q${Date.now().toString(36).slice(-5)}`, label: r.questions.length ? "" : academic ? "Year of graduation" : "", required: false }] })}>
+                <Plus size={14} /> Add a question
+              </Button>
+            )}
+          </div>
+          <div className="grid-2 tight">
+            <Field label="Message on the form (optional)">
+              <textarea className="input" rows={2} maxLength={1000} placeholder="e.g. Only financial members of the 2010–2015 sets are eligible." value={r.message} onChange={(x) => set("registration", { message: x.target.value })} />
+            </Field>
+            <Field label="Registration closes (optional)">
+              <input className="input" type="datetime-local" value={toLocalInput(r.closesAt)} onChange={(x) => set("registration", { closesAt: fromLocalInput(x.target.value) })} />
+            </Field>
+          </div>
+        </div>
+      )}
+    </Panel>
   );
 }
