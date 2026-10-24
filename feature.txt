@@ -1,0 +1,12 @@
+FEATURE	ELECTIONBUDDY	STRAWPOLL
+Capacity for 5,000 voters	Yes. 	Yes. 
+Cost for 5,000 participants	Approximately US$599 for a standard election, based on the published 2,501–5,000 voter.	Pro/Business plans for ad-free voting and additional features. Pro includes 5,000 ad-free votes and 5,000 email invitations per month; US$31 with VAT 
+Sending links to verified participants	Strong. Upload or import an eligible voter list and send personalized invitations by email. Secure voting keys help control access. 	Poll links can be shared by email.
+One link for the election	Yes. Voters receive their own secure access through the election invitation.	Yes. One poll link can be shared with participants.
+All candidates/questions on one page	Yes. Multiple positions and questions can be placed on a single ballot, with results for the ballot presented together. 
+	Separate questions or positions may require separate polls.
+Live results	Yes. Results can be calculated in real time; administrators can configure results to remain hidden until the election ends. 	Yes. Poll results can be viewed through the poll link, depending on the poll settings. 
+
+Analytics and reports	Strong. Reports, charts, voter audits, turnout information, and election-result summaries. 	Basic poll-result summaries and vote counts.
+Reminders to people who have not voted	Yes. Professional includes up to 10 reminders, with voter lists showing who has and has not voted. 	You may need to follow up manually.
+
